@@ -37,7 +37,7 @@ if [ "$CURRENT_APP" = "petclinic" ]; then
   echo ""
 
   # Check metrics-server
-  echo "[Setup 1/4] Checking metrics-server..."
+  echo "[Setup 1/3] Checking metrics-server..."
   if kubectl get deployment metrics-server -n kube-system &>/dev/null; then
     echo "  ✓ metrics-server already installed"
   else
@@ -51,50 +51,25 @@ if [ "$CURRENT_APP" = "petclinic" ]; then
     echo "  ✓ metrics-server installed"
   fi
 
-  # Seed database
-  echo "[Setup 2/4] Seeding database..."
-  OWNER_COUNT=$(kubectl run test-seed-check --image=curlimages/curl --rm -i --restart=Never -n "$NAMESPACE" -- curl -s http://customers-service:8081/owners 2>/dev/null | grep -o '"id"' | wc -l | tr -d ' ' || echo "0")
-
-  if [ "$OWNER_COUNT" -gt 10 ]; then
-    echo "  ✓ Database already has data ($OWNER_COUNT entries)"
-  else
-    echo "  → Seeding database with 50 owners and 100 pets..."
-    kubectl run petclinic-seeder --image=curlimages/curl --rm -i --restart=Never -n "$NAMESPACE" -- sh -c '
-      BASE="http://customers-service:8081"
-      for i in $(seq 1 50); do
-        OWNER_JSON="{\"firstName\":\"Owner$i\",\"lastName\":\"Test\",\"address\":\"${i} Main St\",\"city\":\"Boston\",\"telephone\":\"617000$(printf \"%04d\" $i)\"}"
-        OWNER_ID=$(curl -s -X POST "$BASE/owners" -H "Content-Type: application/json" -d "$OWNER_JSON" | grep -o "\"id\":[0-9]*" | cut -d: -f2)
-        if [ -n "$OWNER_ID" ]; then
-          curl -s -X POST "$BASE/owners/$OWNER_ID/pets" -H "Content-Type: application/json" \
-            -d "{\"name\":\"Pet${i}A\",\"birthDate\":\"2020-01-15\",\"type\":{\"name\":\"dog\"}}" > /dev/null
-          curl -s -X POST "$BASE/owners/$OWNER_ID/pets" -H "Content-Type: application/json" \
-            -d "{\"name\":\"Pet${i}B\",\"birthDate\":\"2021-06-20\",\"type\":{\"name\":\"cat\"}}" > /dev/null
-        fi
-      done
-    ' 2>&1 | grep -v "command prompt" >/dev/null
-    echo "  ✓ Database seeded successfully"
-  fi
-
   # Deploy intensive load test
-  echo "[Setup 3/4] Deploying CPU-intensive load test..."
+  echo "[Setup 2/3] Deploying CPU-intensive load test..."
   REPO_ROOT="$(cd "$STUDY_DIR/../.." && pwd)"
   kubectl create configmap locust-tasks \
     --from-file=locustfile.py="$REPO_ROOT/applications/petclinic/locust/locustfile-intensive.py" \
     -n "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
-  echo "  ✓ Intensive load test configured (will set FRONTEND_URL after deployment restart)"
+  echo "  ✓ Intensive load test configured (70% writes, 10x faster)"
 
   # Apply CPU-intensive scenario
-  echo "[Setup 4/4] Applying aggressive load scenario..."
-  kubectl apply -f "$REPO_ROOT/loadgenerator/scenarios/scenario-cpu-intensive.yaml" >/dev/null
-  echo "  ✓ Aggressive scenario applied (100→500→1000→1500→2000 users)"
+  echo "[Setup 3/3] Applying aggressive load scenario..."
+  kubectl apply -f "$REPO_ROOT/studies/hpa-autoscaling/scenario-config.yaml" >/dev/null
+  echo "  ✓ Aggressive scenario applied"
 
   echo ""
   echo "=== PetClinic Setup Complete ==="
   echo "  ✓ Metrics-server ready"
-  echo "  ✓ Database populated with test data"
+  echo "  ✓ H2 sample data pre-loaded at startup (no seeding needed)"
   echo "  ✓ CPU-intensive load test (70% writes, 10x faster)"
-  echo "  ✓ Aggressive user ramp (up to 2000 users)"
   echo ""
 fi
 
@@ -107,43 +82,20 @@ case "$CURRENT_APP" in
     kubectl apply -f "$STUDY_DIR/adservice-hpa.yaml"
     ;;
   petclinic)
-    echo "  → Configuring HPA for CPU-intensive PetClinic services (customers-service, visits-service)"
-    # Create HPA for customers-service (CPU-intensive: database writes, JPA operations)
+    echo "  → Configuring HPA for petclinic (Spring MVC WAR, CPU-intensive)"
     cat <<EOF | kubectl apply -f -
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: customers-service
+  name: petclinic
   namespace: $NAMESPACE
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: customers-service
+    name: petclinic
   minReplicas: 1
-  maxReplicas: 10
-  metrics:
-  - type: Resource
-    resource:
-      name: cpu
-      target:
-        type: Utilization
-        averageUtilization: 70
-EOF
-    # Create HPA for visits-service (CPU-intensive: complex queries, transactions)
-    cat <<EOF | kubectl apply -f -
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: visits-service
-  namespace: $NAMESPACE
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: visits-service
-  minReplicas: 1
-  maxReplicas: 8
+  maxReplicas: 5
   metrics:
   - type: Resource
     resource:
@@ -180,9 +132,9 @@ if [ "$CURRENT_APP" = "petclinic" ]; then
   kubectl delete deployment ak-loadgenerator -n "$NAMESPACE" --ignore-not-found >/dev/null
   kubectl apply -f "$REPO_ROOT/loadgenerator/loadgenerator.yaml" >/dev/null
 
-  # Set FRONTEND_URL after deployment is created (otherwise it gets reset)
+  # Set FRONTEND_URL to single petclinic service
   kubectl set env deployment/ak-loadgenerator -n "$NAMESPACE" \
-    FRONTEND_URL=http://customers-service.microservices-demo.svc.cluster.local:8081 >/dev/null 2>&1
+    FRONTEND_URL=http://petclinic.microservices-demo.svc.cluster.local:8080 >/dev/null 2>&1
 
   echo "  → Waiting for load generator to be ready..."
   kubectl wait --for=condition=available deployment/ak-loadgenerator -n "$NAMESPACE" --timeout=120s >/dev/null
@@ -201,9 +153,7 @@ case "$CURRENT_APP" in
     echo "HPA target:  adservice (80% CPU, 1-20 replicas)"
     ;;
   petclinic)
-    echo "HPA targets:"
-    echo "  - customers-service (70% CPU, 1-10 replicas) - Database writes, JPA"
-    echo "  - visits-service (70% CPU, 1-8 replicas) - Complex queries, transactions"
+    echo "HPA target:  petclinic (70% CPU, 1-5 replicas) - Spring MVC + Hibernate + H2"
     ;;
 esac
 
@@ -219,7 +169,7 @@ echo ""
 echo "Access Grafana:  http://localhost:3000"
 echo "Access Locust:   http://localhost:8089"
 if [ "$CURRENT_APP" = "petclinic" ]; then
-  echo "Access Eureka:   http://localhost:8761"
+  echo "Access PetClinic: http://localhost:8081"
 fi
 echo ""
 echo "To tear down: $0 teardown"

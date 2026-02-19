@@ -1,31 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Spring PetClinic Microservices - Build Script for Java 25 + arm64
+# Spring Framework PetClinic — Build Script
+#
+# Builds a single WAR image using Tomcat 11 + eclipse-temurin:<JAVA_VERSION>.
 #
 # Usage:
-#   ./build-images.sh                    # Build all services
-#   ./build-images.sh --load-to-kind     # Build and load to Kind cluster
-#   ./build-images.sh api-gateway        # Build specific service only
+#   ./build-images.sh                       # Build with Java 17 (default)
+#   ./build-images.sh --java-version 25     # Build with Java 25
+#   ./build-images.sh --load-to-kind        # Build and load to Kind cluster
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="/tmp/petclinic-build-$$"
-REPO_URL="https://github.com/spring-petclinic/spring-petclinic-microservices.git"
-JAVA_VERSION="25"
+REPO_URL="https://github.com/spring-petclinic/spring-framework-petclinic.git"
+JAVA_VERSION="17"
 ARCH=$(uname -m)
-
-# Service list
-ALL_SERVICES=(
-  "spring-petclinic-discovery-server"
-  "spring-petclinic-api-gateway"
-  "spring-petclinic-customers-service"
-  "spring-petclinic-visits-service"
-  "spring-petclinic-vets-service"
-)
 
 # Parse arguments
 LOAD_TO_KIND=false
-SERVICES_TO_BUILD=()
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -33,36 +25,32 @@ while [[ $# -gt 0 ]]; do
       LOAD_TO_KIND=true
       shift
       ;;
+    --java-version)
+      JAVA_VERSION="$2"
+      shift 2
+      ;;
     --help|-h)
-      echo "Usage: $0 [OPTIONS] [SERVICES...]"
+      echo "Usage: $0 [OPTIONS]"
       echo ""
-      echo "Build Spring PetClinic microservices with Java 25 for native architecture."
+      echo "Build spring-framework-petclinic WAR image for native architecture."
       echo ""
       echo "Options:"
-      echo "  --load-to-kind    Load built images into Kind cluster 'jvm-bench'"
-      echo "  --help, -h        Show this help message"
-      echo ""
-      echo "Services (build specific services, or all if none specified):"
-      echo "  discovery-server, api-gateway, customers-service, visits-service, vets-service"
+      echo "  --java-version <N>  Java version to use (default: 17)"
+      echo "  --load-to-kind      Load built image into Kind cluster 'jvm-bench'"
+      echo "  --help, -h          Show this help message"
       echo ""
       echo "Examples:"
-      echo "  $0                              # Build all services"
-      echo "  $0 --load-to-kind               # Build all and load to Kind"
-      echo "  $0 api-gateway customers-service # Build specific services"
+      echo "  $0                               # Build with Java 17"
+      echo "  $0 --java-version 25             # Build with Java 25"
+      echo "  $0 --java-version 25 --load-to-kind"
       exit 0
       ;;
     *)
-      # Assume it's a service name (short form)
-      SERVICES_TO_BUILD+=("spring-petclinic-$1")
-      shift
+      echo "Unknown argument: $1. Run $0 --help for usage."
+      exit 1
       ;;
   esac
 done
-
-# If no services specified, build all
-if [ ${#SERVICES_TO_BUILD[@]} -eq 0 ]; then
-  SERVICES_TO_BUILD=("${ALL_SERVICES[@]}")
-fi
 
 # Detect architecture and set platform
 case "$ARCH" in
@@ -75,148 +63,138 @@ case "$ARCH" in
     echo "Architecture: arm64 (Apple Silicon)"
     ;;
   *)
-    echo "❌ ERROR: Unsupported architecture: $ARCH"
+    echo "ERROR: Unsupported architecture: $ARCH"
     exit 1
     ;;
 esac
 
+IMAGE_TAG="localhost/spring-framework-petclinic:java${JAVA_VERSION}-${ARCH}"
+
 echo ""
-echo "=== Spring PetClinic Build for Java $JAVA_VERSION ==="
+echo "=== Spring Framework PetClinic Build (Java $JAVA_VERSION) ==="
 echo ""
-echo "Services to build: ${SERVICES_TO_BUILD[*]}"
-echo "Platform: $PLATFORM"
-echo "Build directory: $BUILD_DIR"
-echo "Load to Kind: $LOAD_TO_KIND"
+echo "Image tag:      $IMAGE_TAG"
+echo "Platform:       $PLATFORM"
+echo "Build dir:      $BUILD_DIR"
+echo "Load to Kind:   $LOAD_TO_KIND"
 echo ""
 
 # Check prerequisites
-echo "[1/6] Checking prerequisites..."
+echo "[1/5] Checking prerequisites..."
 
-if ! command -v java &> /dev/null; then
-  echo "❌ ERROR: Java not found. Install Java 25: brew install openjdk@25"
+if ! command -v docker &>/dev/null; then
+  echo "ERROR: Docker not found."
   exit 1
 fi
 
-JAVA_INSTALLED=$(java -version 2>&1 | head -n 1 | cut -d'"' -f2 | cut -d'.' -f1)
-if [ "$JAVA_INSTALLED" -lt 17 ]; then
-  echo "⚠️  WARNING: Java $JAVA_INSTALLED detected. Java 25 recommended for builds."
-fi
-
-if ! command -v mvn &> /dev/null; then
-  echo "❌ ERROR: Maven not found. Install: brew install maven"
+if [ "$LOAD_TO_KIND" = true ] && ! command -v kind &>/dev/null; then
+  echo "ERROR: kind not found but --load-to-kind requested."
   exit 1
 fi
 
-if ! command -v docker &> /dev/null; then
-  echo "❌ ERROR: Docker not found. Install: https://docs.docker.com/get-docker/"
-  exit 1
+# Determine Maven build method: local or Docker-based
+USE_DOCKER_BUILD=false
+if command -v java &>/dev/null && command -v mvn &>/dev/null; then
+  JAVA_INSTALLED=$(java -version 2>&1 | head -n 1 | cut -d'"' -f2 | cut -d'.' -f1)
+  if [ "$JAVA_INSTALLED" -lt "$JAVA_VERSION" ]; then
+    echo "  WARNING: Java $JAVA_INSTALLED detected, Java $JAVA_VERSION requested. Using Docker build."
+    USE_DOCKER_BUILD=true
+  else
+    echo "  Local Java $JAVA_INSTALLED + Maven found"
+  fi
+else
+  echo "  Local Java/Maven not found. Will use Docker for Maven build (maven:3.9-eclipse-temurin-${JAVA_VERSION})."
+  USE_DOCKER_BUILD=true
 fi
 
-if [ "$LOAD_TO_KIND" = true ] && ! command -v kind &> /dev/null; then
-  echo "❌ ERROR: Kind not found but --load-to-kind specified. Install: brew install kind"
-  exit 1
-fi
-
-echo "✓ All prerequisites satisfied"
+echo "Prerequisites OK"
 
 # Clone repository
 echo ""
-echo "[2/6] Cloning repository..."
+echo "[2/5] Cloning repository..."
 mkdir -p "$BUILD_DIR"
 git clone --depth 1 "$REPO_URL" "$BUILD_DIR"
 cd "$BUILD_DIR"
-
-echo "✓ Repository cloned to $BUILD_DIR"
-
-# Update Dockerfiles to Java 25
-echo ""
-echo "[3/6] Updating Dockerfiles to Java $JAVA_VERSION..."
-
-for service in "${SERVICES_TO_BUILD[@]}"; do
-  if [ -f "$service/Dockerfile" ]; then
-    sed -i.bak "s/eclipse-temurin:[0-9]*-jre/eclipse-temurin:${JAVA_VERSION}-jre/g" "$service/Dockerfile"
-    echo "  ✓ Updated $service/Dockerfile"
-  else
-    echo "  ⚠️  WARNING: $service/Dockerfile not found, skipping"
-  fi
-done
+echo "Repository cloned to $BUILD_DIR"
 
 # Build with Maven
 echo ""
-echo "[4/6] Building with Maven (this may take 15-20 minutes)..."
-echo "  → Running: mvn clean package -DskipTests"
+echo "[3/5] Building with Maven..."
 
-# Build only the specified services
-SERVICE_MODULES=$(printf ",%s" "${SERVICES_TO_BUILD[@]}")
-SERVICE_MODULES=${SERVICE_MODULES:1}  # Remove leading comma
+if [ "$USE_DOCKER_BUILD" = true ]; then
+  MAVEN_IMAGE="maven:3.9-eclipse-temurin-${JAVA_VERSION}"
+  echo "  Running Maven inside Docker ($MAVEN_IMAGE)..."
+  # Resolve real HOME (may be empty in non-login shells)
+  REAL_HOME="${HOME:-$(eval echo ~)}"
+  M2_CACHE="${REAL_HOME}/.m2"
+  # No --platform: JARs/WARs are platform-independent bytecode
+  docker run --rm \
+    -v "$BUILD_DIR":/workspace \
+    -v "${M2_CACHE}:/root/.m2" \
+    -w /workspace \
+    "$MAVEN_IMAGE" \
+    mvn clean package -DskipTests
+else
+  echo "  Running: mvn clean package -DskipTests"
+  mvn clean package -DskipTests
+fi
 
-mvn clean package -DskipTests -pl "$SERVICE_MODULES" -am
+echo "Maven build complete"
 
-echo "✓ Maven build complete"
+# Find WAR (finalName in pom.xml is "petclinic", so file is petclinic.war)
+WAR_FILE=$(ls "${BUILD_DIR}/target/"*.war 2>/dev/null | grep -v "original" | head -1)
+if [ -z "$WAR_FILE" ]; then
+  echo "ERROR: WAR not found in $BUILD_DIR/target/"
+  exit 1
+fi
+echo "  WAR: $WAR_FILE"
 
-# Build Docker images
+# Build Docker image
 echo ""
-echo "[5/6] Building Docker images..."
+echo "[4/5] Building Docker image ($IMAGE_TAG)..."
 
-BUILT_IMAGES=()
+BUILD_CTX=$(mktemp -d)
+cp "$WAR_FILE" "${BUILD_CTX}/spring-framework-petclinic.war"
+cp "${SCRIPT_DIR}/jvm-entrypoint.sh" "${BUILD_CTX}/jvm-entrypoint.sh"
 
-for service in "${SERVICES_TO_BUILD[@]}"; do
-  if [ ! -f "$service/target/"*.jar ]; then
-    echo "  ⚠️  WARNING: JAR not found for $service, skipping Docker build"
-    continue
-  fi
+docker build \
+  --platform "$PLATFORM" \
+  -t "$IMAGE_TAG" \
+  -f "${SCRIPT_DIR}/Dockerfile" \
+  --build-arg "JAVA_VERSION=${JAVA_VERSION}" \
+  "$BUILD_CTX/"
 
-  IMAGE_TAG="localhost/${service}:java${JAVA_VERSION}-${ARCH}"
-  echo "  → Building: $IMAGE_TAG"
-
-  docker build \
-    --platform "$PLATFORM" \
-    -t "$IMAGE_TAG" \
-    "$service/" \
-    --quiet
-
-  echo "  ✓ Built: $IMAGE_TAG"
-  BUILT_IMAGES+=("$IMAGE_TAG")
-done
+rm -rf "$BUILD_CTX"
+echo "Built: $IMAGE_TAG"
 
 # Load to Kind
 if [ "$LOAD_TO_KIND" = true ]; then
   echo ""
-  echo "[6/6] Loading images to Kind cluster 'jvm-bench'..."
+  echo "[5/5] Loading image into Kind cluster 'jvm-bench'..."
 
-  # Check if Kind cluster exists
   if ! kind get clusters | grep -q "^jvm-bench$"; then
-    echo "  ⚠️  WARNING: Kind cluster 'jvm-bench' not found"
-    echo "  Create cluster with: ./setup.sh"
-    echo ""
-    echo "  Skipping Kind load step."
+    echo "  WARNING: Kind cluster 'jvm-bench' not found. Create it first with: ./setup.sh"
+    echo "  Skipping Kind load."
   else
-    for image in "${BUILT_IMAGES[@]}"; do
-      echo "  → Loading: $image"
-      kind load docker-image "$image" --name jvm-bench
-    done
-    echo "✓ All images loaded to Kind cluster"
+    kind load docker-image "$IMAGE_TAG" --name jvm-bench
+    echo "Image loaded to Kind cluster"
   fi
 else
   echo ""
-  echo "[6/6] Skipping Kind load (use --load-to-kind to enable)"
+  echo "[5/5] Skipping Kind load (use --load-to-kind to enable)"
 fi
 
 # Summary
 echo ""
 echo "=== Build Complete ==="
 echo ""
-echo "Built images:"
-for image in "${BUILT_IMAGES[@]}"; do
-  echo "  - $image"
-done
+echo "Image: $IMAGE_TAG"
 echo ""
 echo "Next steps:"
-echo "  1. Update applications/petclinic/kubernetes-manifests/petclinic.yaml to use these images"
-echo "  2. Run: ./setup.sh --app petclinic"
+echo "  ./setup.sh --app petclinic --java-version $JAVA_VERSION"
 echo ""
-echo "To verify Java version in running pods:"
-echo "  kubectl exec -n microservices-demo deployment/customers-service -- java -version"
+echo "To verify Java version in running pod:"
+echo "  kubectl exec -n microservices-demo deployment/petclinic -- java -version"
 echo ""
 echo "To clean up build directory:"
 echo "  rm -rf $BUILD_DIR"

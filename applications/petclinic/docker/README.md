@@ -1,274 +1,172 @@
-# Building PetClinic for arm64 with Java 25
+# Building PetClinic with a custom Java version
 
 ## Overview
 
-The official Spring PetClinic Microservices Docker images are available as **multi-arch images** (both x86_64 and arm64) from Docker Hub:
+The official `springcommunity/spring-framework-petclinic:latest` image uses **Java 17** (amd64 only).
+For arm64-native builds or a different Java version, use `build-images.sh` to produce a custom image.
 
-```bash
-docker pull springcommunity/spring-petclinic-api-gateway:latest
-docker pull springcommunity/spring-petclinic-customers-service:latest
-docker pull springcommunity/spring-petclinic-visits-service:latest
-docker pull springcommunity/spring-petclinic-vets-service:latest
-docker pull springcommunity/spring-petclinic-discovery-server:latest
+The custom build also injects `jvm-entrypoint.sh` as the Docker `ENTRYPOINT`. At pod startup
+this script captures the actual JVM configuration flags and exposes them as Prometheus labels
+in Grafana (GC algorithm, heap sizes, JIT settings, etc.).
+
+## Architecture: WAR on Tomcat
+
+Unlike the microservices version (Spring Boot fat JAR), `spring-framework-petclinic` is a
+classic Spring MVC WAR deployed on Apache Tomcat 11.
+
+```
+Dockerfile
+├── Base image: eclipse-temurin:<JAVA_VERSION>
+├── Downloads Tomcat 11.0.2 from Apache archives
+├── Deploys petclinic.war as ROOT.war
+└── ENTRYPOINT: jvm-entrypoint.sh → catalina.sh run
 ```
 
-However, these images use **Java 17** (LTS). If you need **Java 25** for benchmarking, you must build the images locally.
+`jvm-entrypoint.sh` captures `PrintFlagsFinal` before Tomcat starts, then launches Tomcat
+via `catalina.sh run`. Tomcat inherits `JAVA_TOOL_OPTIONS` (OTel agent) and
+`OTEL_RESOURCE_ATTRIBUTES` (JVM config labels).
 
-## Why Java 25?
+## Why Custom Builds?
 
-Java 25 includes:
-- **ZGC improvements** (sub-millisecond GC pauses, better concurrent operations)
-- **G1GC enhancements** (adaptive heap sizing, predictive allocation)
-- **Virtual threads** (Project Loom - lightweight concurrency for high-throughput services)
-- **Performance improvements** across JIT compiler, startup time, and memory footprint
-
-For JVM benchmarking, Java 25 represents the current state-of-the-art.
+1. **Native arm64 support**: Official image is amd64-only; runs under QEMU on Apple Silicon (slower startup, less accurate benchmarks)
+2. **Java version flexibility**: Benchmark Java 17 vs 21 vs 25 on identical application code
+3. **JVM config labels**: `jvm-entrypoint.sh` injects GC algorithm, heap sizes, JIT settings into Grafana
 
 ## Prerequisites
 
-| Tool | Version | Install |
-|------|---------|---------|
-| Java (JDK) | 25+ | [download](https://jdk.java.net/25/) or `brew install openjdk@25` |
-| Maven | 3.9+ | `brew install maven` |
-| Docker | 20+ | [docker.com](https://docs.docker.com/get-docker/) |
-| Git | 2.30+ | `brew install git` |
+| Tool | Version |
+|------|---------|
+| Docker | 20+ |
+| Git | 2.30+ |
 
-**Memory**: At least 4 GB free RAM (Maven builds are memory-intensive).
+Java and Maven are **not required** locally — the build script falls back to a
+`maven:3.9-eclipse-temurin-<version>` Docker container automatically.
 
 ## Build Process
 
-### Option 1: Automated Build Script
-
-Use the provided build script to build all services:
+### Automated (recommended)
 
 ```bash
-# Build all services with Java 25 for arm64
+cd applications/petclinic/docker
+
+# Build with Java 17 (default)
 ./build-images.sh
 
-# Build and push to Kind cluster
-./build-images.sh --load-to-kind
-
-# Build specific services only
-./build-images.sh api-gateway customers-service
+# Build with Java 25 and load directly into Kind
+./build-images.sh --java-version 25 --load-to-kind
 ```
 
-The script will:
-1. Clone the Spring PetClinic Microservices repository
-2. Update all Dockerfiles to use Java 25 base image
-3. Build with Maven (skipping tests for faster builds)
-4. Build Docker images with `--platform linux/arm64`
-5. Tag images as `localhost/spring-petclinic-<service>:java25-arm64`
-6. Optionally load images into Kind cluster
+The script:
+1. Clones `spring-framework-petclinic` from GitHub (shallow clone)
+2. Builds the WAR with Maven (Docker-based build if local Java/Maven absent)
+3. Builds the Docker image using `Dockerfile` (WAR + Tomcat 11 + `jvm-entrypoint.sh`)
+4. Tags as `localhost/spring-framework-petclinic:java<N>-<arch>`
+5. Optionally loads into Kind cluster `jvm-bench`
 
-**Build time**: ~20-30 minutes for first build (Maven downloads dependencies), ~5-10 minutes for incremental builds.
+**Build time**: ~10–15 min first run (Maven downloads dependencies), ~3–5 min incremental.
 
-### Option 2: Manual Build
-
-#### Step 1: Clone Repository
+### Manual Build
 
 ```bash
-cd /tmp
-git clone https://github.com/spring-petclinic/spring-petclinic-microservices.git
-cd spring-petclinic-microservices
-```
+# 1. Clone the repository
+git clone --depth 1 https://github.com/spring-petclinic/spring-framework-petclinic.git /tmp/petclinic-build
+cd /tmp/petclinic-build
 
-#### Step 2: Update Dockerfiles to Java 25
-
-Each service has a `Dockerfile` in its directory. Update the base image from:
-
-```dockerfile
-FROM eclipse-temurin:17-jre-jammy
-```
-
-to:
-
-```dockerfile
-FROM eclipse-temurin:25-jre-jammy
-```
-
-Services to update:
-- `spring-petclinic-api-gateway/Dockerfile`
-- `spring-petclinic-customers-service/Dockerfile`
-- `spring-petclinic-visits-service/Dockerfile`
-- `spring-petclinic-vets-service/Dockerfile`
-- `spring-petclinic-discovery-server/Dockerfile`
-
-**Automated update**:
-```bash
-find . -name Dockerfile -exec sed -i '' 's/eclipse-temurin:17-jre/eclipse-temurin:25-jre/g' {} \;
-```
-
-#### Step 3: Build with Maven
-
-```bash
-# Build all services (skip tests for speed)
+# 2. Build the WAR
 mvn clean package -DskipTests
+# WAR output: target/petclinic.war  (finalName in pom.xml)
 
-# Or build specific modules
-mvn clean package -DskipTests -pl spring-petclinic-customers-service
+# 3. Prepare Docker build context
+mkdir /tmp/ctx
+cp target/petclinic.war /tmp/ctx/spring-framework-petclinic.war
+cp /path/to/docker/jvm-entrypoint.sh /tmp/ctx/jvm-entrypoint.sh
+
+# 4. Build Docker image
+docker build --platform linux/arm64 \
+  --build-arg JAVA_VERSION=25 \
+  -t localhost/spring-framework-petclinic:java25-arm64 \
+  -f /path/to/docker/Dockerfile \
+  /tmp/ctx/
+
+# 5. Load into Kind
+kind load docker-image localhost/spring-framework-petclinic:java25-arm64 --name jvm-bench
 ```
 
-Maven will:
-- Compile Java source code
-- Package as JAR files
-- Output to `target/*.jar` in each service directory
+## JVM Configuration Entrypoint
 
-**Expected output locations**:
-- `spring-petclinic-api-gateway/target/spring-petclinic-api-gateway-3.0.1.jar`
-- `spring-petclinic-customers-service/target/spring-petclinic-customers-service-3.0.1.jar`
-- `spring-petclinic-visits-service/target/spring-petclinic-visits-service-3.0.1.jar`
-- `spring-petclinic-vets-service/target/spring-petclinic-vets-service-3.0.1.jar`
-- `spring-petclinic-discovery-server/target/spring-petclinic-discovery-server-3.0.1.jar`
+`jvm-entrypoint.sh` is copied into the image and runs before Tomcat starts.
 
-#### Step 4: Build Docker Images
+### What it does
 
-Build each service as a Docker image for arm64:
+1. Runs `env -u JAVA_TOOL_OPTIONS java -XX:+PrintFlagsFinal -version` to probe JVM flags
+   (unsetting `JAVA_TOOL_OPTIONS` to avoid loading the OTel agent during the short-lived probe)
+2. Extracts: GC algorithm, heap sizes, GC pause target, GC threads, JIT settings, compressed OOPs, CPU count
+3. Builds `OTEL_RESOURCE_ATTRIBUTES` string and appends to any existing attrs from the K8s manifest
+4. Executes: `exec /opt/tomcat/bin/catalina.sh run` — Tomcat starts with OTel agent (JAVA_TOOL_OPTIONS restored)
+
+### Why this matters
+
+The OTel Collector converts resource attributes → Prometheus labels (`resource_to_telemetry_conversion: enabled: true`). Every JVM metric then carries `jvm_config_gc`, `jvm_config_heap_max`, etc. The Grafana JVM Overview dashboard uses these to display a per-pod configuration table without hardcoding.
+
+## Using Custom Images with setup.sh
 
 ```bash
-# Discovery Server
-docker build --platform linux/arm64 \
-  -t localhost/spring-petclinic-discovery-server:java25-arm64 \
-  spring-petclinic-discovery-server/
-
-# Customers Service
-docker build --platform linux/arm64 \
-  -t localhost/spring-petclinic-customers-service:java25-arm64 \
-  spring-petclinic-customers-service/
-
-# Visits Service
-docker build --platform linux/arm64 \
-  -t localhost/spring-petclinic-visits-service:java25-arm64 \
-  spring-petclinic-visits-service/
-
-# Vets Service
-docker build --platform linux/arm64 \
-  -t localhost/spring-petclinic-vets-service:java25-arm64 \
-  spring-petclinic-vets-service/
-
-# API Gateway
-docker build --platform linux/arm64 \
-  -t localhost/spring-petclinic-api-gateway:java25-arm64 \
-  spring-petclinic-api-gateway/
+./setup.sh --app petclinic --java-version 25
 ```
 
-**Build time per service**: ~2-3 minutes on Apple Silicon (M1/M2/M3).
-
-#### Step 5: Load Images into Kind
-
-```bash
-# Load each image into the Kind cluster
-kind load docker-image localhost/spring-petclinic-discovery-server:java25-arm64 --name jvm-bench
-kind load docker-image localhost/spring-petclinic-customers-service:java25-arm64 --name jvm-bench
-kind load docker-image localhost/spring-petclinic-visits-service:java25-arm64 --name jvm-bench
-kind load docker-image localhost/spring-petclinic-vets-service:java25-arm64 --name jvm-bench
-kind load docker-image localhost/spring-petclinic-api-gateway:java25-arm64 --name jvm-bench
-```
-
-#### Step 6: Update Kubernetes Manifests
-
-Edit `applications/petclinic/kubernetes-manifests/petclinic.yaml` to use your locally-built images:
-
-```yaml
-# Change from:
-image: springcommunity/spring-petclinic-api-gateway:latest
-
-# To:
-image: localhost/spring-petclinic-api-gateway:java25-arm64
-imagePullPolicy: Never  # Prevent pulling from Docker Hub
-```
-
-Apply the same change for all 5 services.
-
-**Alternative**: Use the `--build-local` flag in `setup.sh` (if implemented) to automatically use local images.
+`setup.sh` detects the non-default Java version, checks for the local image, and:
+- If missing: prompts to build it (calls `build-images.sh` automatically)
+- Substitutes `localhost/spring-framework-petclinic:java25-<arch>` into the manifest
+- Sets `imagePullPolicy: Never` to prevent Docker Hub pulls
 
 ## Verification
 
-After building and deploying, verify Java 25 is running:
-
 ```bash
-# Check Java version in a running pod
-kubectl exec -n microservices-demo deployment/customers-service -- java -version
+# Check Java version in running pod
+kubectl exec -n microservices-demo deployment/petclinic -- java -version
 
-# Expected output:
+# Expected (Java 25):
 # openjdk version "25" 2025-09-16
 # OpenJDK Runtime Environment Temurin-25+...
-# OpenJDK 64-Bit Server VM Temurin-25+...
-```
 
-Check for virtual threads (Java 25 feature):
-
-```bash
-# Virtual threads should appear in JVM metrics
-kubectl exec -n microservices-demo deployment/customers-service -- \
-  jcmd 1 Thread.print | grep virtual
-
-# Or check via Grafana JVM dashboard for thread metrics
+# Verify Tomcat is running
+kubectl exec -n microservices-demo deployment/petclinic -- \
+  /opt/tomcat/bin/catalina.sh version
 ```
 
 ## Troubleshooting
 
-### Maven Build Fails
+### Maven Build Fails: OutOfMemoryError
 
-**Error**: `OutOfMemoryError` during Maven build
+Increase Maven heap inside the Docker build:
 
-**Solution**: Increase Maven memory:
 ```bash
-export MAVEN_OPTS="-Xmx2g"
-mvn clean package -DskipTests
+docker run --rm -e MAVEN_OPTS="-Xmx2g" \
+  -v /tmp/petclinic-build:/workspace -v ~/.m2:/root/.m2 \
+  -w /workspace maven:3.9-eclipse-temurin-25 \
+  mvn clean package -DskipTests
 ```
 
-### Docker Build Slow
+### Pod Startup Slow / StartupProbe Fails
 
-**Issue**: Docker build takes >5 minutes per service
+On arm64 with official image (QEMU), or with any image under heavy OTel agent init:
 
-**Cause**: QEMU emulation still being used (you're on x86_64 but building for arm64, or vice versa)
+- Startup probe `failureThreshold: 36` allows up to 6 minutes (36 × 10 s)
+- If still failing, check logs: `kubectl logs -n microservices-demo deployment/petclinic`
 
-**Solution**: Ensure you're building for your native architecture:
+### Image Not Found in Kind
+
 ```bash
-# Check your architecture
-uname -m
-# arm64 → build with --platform linux/arm64
-# x86_64 → build with --platform linux/amd64
+# Verify local image exists
+docker images | grep spring-framework-petclinic
+
+# Reload manually
+kind load docker-image localhost/spring-framework-petclinic:java25-arm64 --name jvm-bench
 ```
-
-### Images Not Loading to Kind
-
-**Error**: `image not found` after `kind load docker-image`
-
-**Solution**: Verify image exists locally first:
-```bash
-docker images | grep spring-petclinic
-# Should show all 5 services with java25-arm64 tag
-```
-
-### Java Version Still Shows 17
-
-**Cause**: Dockerfile not updated, or old image cached
-
-**Solution**:
-1. Verify Dockerfile has `eclipse-temurin:25-jre-jammy`
-2. Rebuild with `--no-cache`:
-   ```bash
-   docker build --no-cache --platform linux/arm64 -t localhost/spring-petclinic-api-gateway:java25-arm64 spring-petclinic-api-gateway/
-   ```
-3. Reload into Kind
-
-## Performance Comparison
-
-After building native arm64 images, you should see:
-
-| Metric | Pre-built (QEMU) | Native arm64 (Java 25) | Improvement |
-|--------|------------------|------------------------|-------------|
-| Pod startup time | 60-90s | 30-45s | **2x faster** |
-| CPU efficiency | 70-80% native | 100% native | **20-30% better** |
-| GC pause time | N/A (inconsistent) | Consistent, sub-ms (ZGC) | **Reliable benchmarks** |
-| Throughput (RPS) | ~500 RPS | ~800-1000 RPS | **60-100% higher** |
-
-**Bottom line**: Native builds are essential for accurate JVM benchmarking on Apple Silicon.
 
 ## References
 
-- Spring PetClinic Microservices: https://github.com/spring-petclinic/spring-petclinic-microservices
-- Java 25 Download: https://jdk.java.net/25/
-- Eclipse Temurin Docker Images: https://hub.docker.com/_/eclipse-temurin
-- Kind Loading Images: https://kind.sigs.k8s.io/docs/user/quick-start/#loading-an-image-into-your-cluster
+- spring-framework-petclinic: https://github.com/spring-petclinic/spring-framework-petclinic
+- Eclipse Temurin images: https://hub.docker.com/_/eclipse-temurin
+- Apache Tomcat 11: https://tomcat.apache.org/tomcat-11.0-doc/
+- Kind loading images: https://kind.sigs.k8s.io/docs/user/quick-start/#loading-an-image-into-your-cluster

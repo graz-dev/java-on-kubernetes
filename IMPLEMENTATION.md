@@ -84,7 +84,7 @@ Different JVM applications exhibit different performance characteristics. A simp
 
 **The Online Boutique Problem:** The adservice (Google's microservices demo) is too lightweight for realistic JVM benchmarking. It rarely hits CPU thresholds for HPA scaling, has minimal GC activity, and doesn't stress the heap.
 
-**The Solution:** Add Spring PetClinic Microservices, a well-maintained Spring Boot application with 5 JVM services featuring heterogeneous workloads (DB writes, caching, service discovery). Supports native arm64 and easy Java 25 upgrades.
+**The Solution:** Add Spring Framework PetClinic, a well-maintained Spring MVC WAR application with realistic workloads (Hibernate DB writes, Spring Cache, OTel instrumentation). Runs on Tomcat 11, supports native arm64, and easy Java version upgrades via `--java-version`.
 
 ### Application Directory Structure
 
@@ -104,15 +104,18 @@ applications/
 │   └── locust/
 │       └── locustfile.py            # E-commerce user flow
 │
-└── petclinic/                       # Spring PetClinic Microservices
-    ├── README.md                    # Architecture, services, endpoints
+└── petclinic/                       # Spring Framework PetClinic (single WAR)
+    ├── README.md                    # Architecture, endpoints, load testing
     ├── kubernetes-manifests/
-    │   └── petclinic.yaml           # 5 services (all JVM - Spring Boot)
+    │   └── petclinic.yaml           # 1 service (Spring MVC WAR on Tomcat 11)
     ├── locust/
-    │   └── locustfile.py            # Veterinary clinic user flow
-    └── docker/                      # Optional: build with Java 25
+    │   ├── locustfile.py            # Web UI user flow (HTML endpoints)
+    │   └── locustfile-intensive.py  # CPU-intensive variant for HPA
+    └── docker/                      # Optional: build with custom Java version
         ├── README.md
-        └── build-images.sh          # Maven + Docker build script (stub)
+        ├── Dockerfile               # WAR + Tomcat 11 + jvm-entrypoint.sh
+        ├── build-images.sh          # Maven + Docker build script
+        └── jvm-entrypoint.sh        # Captures JVM flags at startup
 ```
 
 ### Application Selection Mechanism
@@ -135,7 +138,7 @@ The `setup.sh` script accepts an `--app` parameter:
 
 4. **App-specific FRONTEND_URL**: The load generator's `FRONTEND_URL` environment variable is set based on the app:
    - Online Boutique: `http://frontend:80`
-   - PetClinic: `http://api-gateway:8080`
+   - PetClinic: `http://petclinic:8080`
 
 5. **App-type labels**: All Kubernetes manifests include `app-type: <app-name>` labels for identification. This enables:
    - Studies to validate they're running on the correct app
@@ -200,15 +203,15 @@ The locustfile defines realistic user behavior for each app:
 
 | Aspect | Online Boutique | PetClinic |
 |--------|-----------------|----------|
-| **JVM Services** | 1 (adservice) | 5 (discovery-server, api-gateway, customers-service, visits-service, vets-service) |
-| **Workload Types** | Ad retrieval (HashMap lookup) | CPU-intensive (DB writes, JPA mapping), memory-intensive (caching), I/O-intensive (transactions), gateway routing |
-| **CPU Usage** | Low (~5-10% even under high load) | Moderate to high (customers/visits services can hit 70%+ under load) |
-| **GC Activity** | Minimal (young gen GC only, <10ms pauses) | Moderate (both young and old gen, 10-50ms pauses typical) |
-| **Heap Usage** | Stable (~100-150 MB) | Growing with cache (~200-400 MB, vets service uses Spring Cache) |
-| **HPA Scaling** | Rarely triggers (CPU too low) | Reliably triggers at load (especially customers-service) |
-| **arm64 Support** | QEMU emulation only | Native multi-arch images available |
-| **Java Version** | N/A (gRPC service) | Java 17 (official images), easy to upgrade to Java 25 |
-| **Best For** | Simple setup, learning | Realistic benchmarking, Spring Boot applications |
+| **JVM Services** | 1 (adservice) | 1 (petclinic — Spring MVC WAR on Tomcat 11) |
+| **Workload Types** | Ad retrieval (HashMap lookup) | DB writes (Hibernate), JOIN queries, Spring Cache, JSP rendering |
+| **CPU Usage** | Low (~5-10% even under high load) | High under write load (POST visits triggers Hibernate + H2 + OTel) |
+| **GC Activity** | Minimal (young gen GC only, <10ms pauses) | Moderate (Hibernate entity allocation, young gen GC under load) |
+| **Heap Usage** | Stable (~100-150 MB) | Moderate (~400-700 MB; Tomcat + Spring ctx + OTel agent) |
+| **HPA Scaling** | Rarely triggers (CPU too low) | Reliably triggers at load (70% POST visits) |
+| **arm64 Support** | QEMU emulation only | Official image amd64 only (QEMU); custom build native arm64 |
+| **Java Version** | N/A (gRPC service) | Java 17 (official image), custom build any version |
+| **Best For** | Simple setup, learning | Realistic benchmarking, single-service HPA studies |
 
 **Recommendation:** Use PetClinic for serious benchmarking. Use Online Boutique only for testing the framework itself or learning Kubernetes observability basics.
 
@@ -297,29 +300,32 @@ The official PetClinic images use Java 17. To benchmark with Java 25, you can bu
 
 3. **Build process (manual):**
    ```bash
-   # Clone PetClinic Microservices repository
-   git clone https://github.com/spring-petclinic/spring-petclinic-microservices.git
-   cd spring-petclinic-microservices
+   # Clone spring-framework-petclinic repository
+   git clone --depth 1 https://github.com/spring-petclinic/spring-framework-petclinic.git /tmp/petclinic-build
+   cd /tmp/petclinic-build
 
-   # Update Dockerfiles to Java 25
-   find . -name Dockerfile -exec sed -i '' 's/eclipse-temurin:17-jre/eclipse-temurin:25-jre/g' {} \;
-
-   # Build all services with Maven
+   # Build the WAR with Maven (or via Docker if local Java absent)
    mvn clean package -DskipTests
+   # WAR output: target/petclinic.war  (finalName set in pom.xml)
 
-   # Build Docker images (native architecture)
-   docker build --platform linux/arm64 -t localhost/spring-petclinic-api-gateway:java25-arm64 spring-petclinic-api-gateway/
-   docker build --platform linux/arm64 -t localhost/spring-petclinic-customers-service:java25-arm64 spring-petclinic-customers-service/
-   # ... repeat for visits-service, vets-service, discovery-server
+   # Prepare Docker build context
+   mkdir /tmp/ctx
+   cp target/petclinic.war /tmp/ctx/spring-framework-petclinic.war
+   cp applications/petclinic/docker/jvm-entrypoint.sh /tmp/ctx/
 
-   # Load images into Kind
-   kind load docker-image localhost/spring-petclinic-api-gateway:java25-arm64 --name jvm-bench
-   kind load docker-image localhost/spring-petclinic-customers-service:java25-arm64 --name jvm-bench
-   # ... load all 5 images
+   # Build Docker image (native architecture)
+   docker build --platform linux/arm64 \
+     --build-arg JAVA_VERSION=25 \
+     -t localhost/spring-framework-petclinic:java25-arm64 \
+     -f applications/petclinic/docker/Dockerfile \
+     /tmp/ctx/
+
+   # Load image into Kind
+   kind load docker-image localhost/spring-framework-petclinic:java25-arm64 --name jvm-bench
    ```
 
-4. **Update manifest to use local images:**
-   Edit `applications/petclinic/kubernetes-manifests/petclinic.yaml` to use `localhost/spring-petclinic-*:java25-arm64` and set `imagePullPolicy: Never`.
+4. **Update manifest to use local image:**
+   `setup.sh` automatically substitutes `springcommunity/spring-framework-petclinic:latest` → `localhost/spring-framework-petclinic:java25-arm64` when `--java-version 25` is passed.
 
 **Status:** Automated build script available at `applications/petclinic/docker/build-images.sh`. See `applications/petclinic/docker/README.md` for detailed manual build instructions.
 
@@ -462,138 +468,88 @@ The manifest was adapted from the upstream v0.10.4 release with these changes:
 
 **File:** `applications/petclinic/kubernetes-manifests/petclinic.yaml`
 
-Spring PetClinic Microservices is the distributed version of the classic [Spring PetClinic](https://github.com/spring-projects/spring-petclinic) application, decomposed into multiple Spring Boot microservices. It's maintained by the Spring community and demonstrates modern Spring Cloud patterns.
+Spring Framework PetClinic is the classic Spring MVC + JSP veterinary clinic application.
+It runs as a single WAR on Tomcat 11 with H2 in-memory database pre-populated at startup.
+
+**Source**: https://github.com/spring-petclinic/spring-framework-petclinic
 
 ### Architecture
 
-PetClinic simulates a veterinary clinic with owner management, pet records, vet information, and appointment scheduling.
-
 ```
-┌──────────────────────────────────────────────────────────┐
-│                     PetClinic                            │
-│                                                          │
-│                   API Gateway (8080)                     │
-│                   (Spring Cloud Gateway)                 │
-│                          ↓                               │
-│  ┌────────────────────────────────────────────────┐     │
-│  │                                                │     │
-│  │  Discovery Server (8761) ← Eureka registry    │     │
-│  │         ↓                                      │     │
-│  │  ┌──────────────────────────────────────┐     │     │
-│  │  │  Customers Service (8081)            │     │     │
-│  │  │  Visits Service (8082)               │     │     │
-│  │  │  Vets Service (8083)                 │     │     │
-│  │  └──────────────────────────────────────┘     │     │
-│  │         ↓                                      │     │
-│  │  Embedded H2 databases (in-memory)            │     │
-│  └────────────────────────────────────────────────┘     │
-└──────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────┐
+│  petclinic (NodePort 30081)         │
+│  Spring Framework 7.0.3             │
+│  Spring MVC + JSP                   │
+│  Tomcat 11 (embedded via WAR)       │
+│  Hibernate / Spring Data JPA        │
+│  H2 in-memory DB (pre-populated)    │
+│  OTel Java agent v2.10.0            │
+└─────────────────────────────────────┘
 ```
 
-### Services
+No service discovery. No config server. One pod.
 
-| Service | Framework | Port | Workload Type | Description |
-|---------|-----------|------|--------------|-------------|
-| **discovery-server** | Spring Cloud Eureka | 8761 | Coordination | Service registry, heartbeat processing |
-| **api-gateway** | Spring Cloud Gateway | 8080 | **I/O-intensive** | Request routing, load balancing across services |
-| **customers-service** | Spring Boot + JPA | 8081 | **CPU-intensive** | CRUD operations for customers and pets (DB writes, JPA mapping) |
-| **visits-service** | Spring Boot + JPA | 8082 | **I/O-intensive** | Appointment scheduling, complex queries, transactions |
-| **vets-service** | Spring Boot + JPA | 8083 | **Memory-intensive** | Vet information, read-heavy with Spring Cache |
+### Key Facts
 
-**All 5 services** run on **Spring Boot 3.x with embedded Tomcat**. Official images use **Java 17**, easily upgradeable to **Java 25** for benchmarking.
+| Property | Value |
+|----------|-------|
+| Official image | `springcommunity/spring-framework-petclinic:latest` |
+| Default Java | 17 (amd64 only; custom builds for arm64 or other versions) |
+| Port | 8080 (NodePort 30081 → `http://localhost:8081`) |
+| Sample owners | 10 (IDs 1–10), pre-loaded at startup |
+| Sample pets | 13 (IDs 1–13) |
 
 ### Workload Characteristics
 
-| Service | CPU Pattern | Memory Pattern | I/O Pattern | GC Behavior |
-|---------|-------------|----------------|-------------|-------------|
-| **customers-service** | High (writes) | Growing | Moderate | Frequent young gen GC during POST/PUT |
-| **visits-service** | Moderate | Stable | High (transactions) | Moderate GC during complex queries |
-| **vets-service** | Low | Growing (cache) | Low | Minimal GC (read-heavy, cached) |
-| **api-gateway** | Low-Moderate | Stable | High (routing) | Young gen GC under high request volume |
-| **discovery-server** | Low | Stable | Low | Minimal GC (heartbeats only) |
+| Endpoint | Workload Type | CPU Driver |
+|----------|--------------|------------|
+| `GET /owners?lastName=` | DB query + JSP render | Hibernate, JDBC |
+| `GET /owners/{id}` | JOIN query (owner+pets+visits) | Hibernate eager load |
+| `POST .../visits/new` | DB insert + redirect | Hibernate transaction, OTel instrumentation |
+| `GET /vets` | Spring Cache hit | Minimal (cached) |
 
 **Why this matters for benchmarking:**
-
-- **Heterogeneous workloads**: Different services stress different JVM subsystems (CPU, heap, GC, I/O)
-- **Real Spring Boot patterns**: JPA, Spring Data, Spring Cloud, embedded Tomcat — reflects production Spring applications
-- **Microservices patterns**: Service discovery, API gateway, circuit breakers
-- **Scalability testing**: HPA works well on customers-service and visits-service under load
-- **Native arm64 support**: Official multi-arch images run natively on Apple Silicon (no QEMU emulation)
+- **POST visits** is the primary HPA trigger: each request runs a Hibernate transaction, OTel span, and H2 write — all on a single pod with a 500m CPU limit
+- **Single HPA target**: simpler than multi-service setup, deterministic scaling behaviour
+- **Pre-populated data**: no seeding step needed, load tests work immediately after pod startup
 
 ### Modifications from Upstream
 
-The manifest was adapted from the [upstream Docker Compose setup](https://github.com/spring-petclinic/spring-petclinic-microservices) with these changes:
+The manifest adapts `springcommunity/spring-framework-petclinic:latest` for Kubernetes:
 
-1. **Node selectors**: All services use `nodeSelector: node-role: workload` for isolation from monitoring stack.
+1. **OTel Java agent injection**: Init container (`busybox:1.36`) downloads OTel agent v2.10.0 via `wget`, shares it via `emptyDir` volume. `JAVA_TOOL_OPTIONS=-javaagent:/otel/opentelemetry-javaagent.jar` loads it automatically.
 
-2. **API Gateway NodePort**: Set to `NodePort: 30081` (port 8081 on host) to avoid conflict with Online Boutique frontend.
+2. **Resource limits**: `cpu: 200m–500m, memory: 512Mi–1Gi` — higher memory than individual microservices because Tomcat + Spring + Hibernate + OTel all share one heap.
 
-3. **Config Server deployment**: Added separate `config-server.yaml` manifest. The official PetClinic images require Spring Cloud Config Server. Configured with `SPRING_PROFILES_ACTIVE=native` for local configuration (no Git repository needed).
+3. **Startup probe**: `httpGet /owners/find, failureThreshold: 36` — allows up to 6 minutes for Tomcat startup + Spring context init + OTel agent warm-up.
 
-4. **OTel Java agent injection**: Added init container pattern to all 5 JVM services. Downloads OpenTelemetry Java agent v2.10.0 from GitHub, mounts via `emptyDir`, loads with `JAVA_TOOL_OPTIONS=-javaagent:/otel/opentelemetry-javaagent.jar`.
+4. **NodePort 30081**: Exposed on host as `http://localhost:8081`, matching the previous API gateway port so Kind port mappings are unchanged.
 
-5. **Resource limits**: Based on typical Spring Boot application requirements:
-   - **discovery-server**: `cpu: 100m-500m, memory: 384Mi-768Mi` (increased for OTel agent overhead)
-   - **customers-service, visits-service, api-gateway**: `cpu: 100m-500m, memory: 256Mi-512Mi`
-   - **vets-service**: `cpu: 100m-500m, memory: 256Mi-512Mi`
-   - **config-server**: `cpu: 50m-300m, memory: 128Mi-256Mi`
+5. **App-type labels**: `app-type: petclinic` on all resources for study scripts to detect.
 
-6. **Probes**: Spring Boot Actuator health endpoints at `/actuator/health`:
-   - **Startup probe**: `failureThreshold: 36` (up to 360s / 6 minutes for Spring context + Hibernate + Eureka + OTel agent startup)
-   - **Readiness probe**: Checks if Spring context is fully initialized
-   - **Liveness probe**: Checks if application is still responsive
-
-7. **App-type labels**: Added `app-type: petclinic` to all resources for identification.
-
-8. **Service-specific port configuration**: Each service has `SERVER_PORT` environment variable set explicitly to avoid config-server overrides:
-   - discovery-server: `SERVER_PORT=8761`
-   - api-gateway: `SERVER_PORT=8080`
-   - customers-service: `SERVER_PORT=8081`
-   - visits-service: `SERVER_PORT=8082`
-   - vets-service: `SERVER_PORT=8083`
-
-9. **Spring Cloud configuration**: All backend services configured with:
-   - `SPRING_CLOUD_CONFIG_URI=http://config-server:8888` (config server endpoint)
-   - `SPRING_CLOUD_CONFIG_IMPORT_CHECK_ENABLED=false` (disable strict config import)
-   - `EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-server:8761/eureka` (Eureka server endpoint)
-   - **Note**: `SPRING_PROFILES_ACTIVE=docker` is NOT used because it causes services to attempt localhost connections instead of using Kubernetes service names.
+6. **JVM configuration entrypoint** (custom builds): `jvm-entrypoint.sh` is the Docker `ENTRYPOINT` in custom images. It runs `java -XX:+PrintFlagsFinal`, extracts GC algorithm, heap sizes, JIT settings, and injects them as `OTEL_RESOURCE_ATTRIBUTES`. See [JVM Configuration Capture](#jvm-configuration-capture).
 
 ### Endpoints
 
-**API Gateway:** `http://localhost:8081/api/customer/owners`
+**Web UI:** `http://localhost:8081`
 
-**REST API examples:**
-- List owners: `GET http://localhost:8081/api/customer/owners`
-- Get owner: `GET http://localhost:8081/api/customer/owners/{id}`
-- Add pet: `POST http://localhost:8081/api/customer/owners/{id}/pets`
-- Schedule visit: `POST http://localhost:8081/api/visit/owners/*/pets/{petId}/visits`
-- List vets: `GET http://localhost:8081/api/vet/vets`
-
-**Eureka Dashboard:** `http://localhost:8081/eureka` - view registered services
-
-**Health checks (Spring Boot Actuator):**
-- API Gateway: `GET http://localhost:8081/actuator/health`
-- Customers: `GET http://customers-service:8081/actuator/health`
-- Visits: `GET http://visits-service:8082/actuator/health`
-- Vets: `GET http://vets-service:8083/actuator/health`
+| URL | Description |
+|-----|-------------|
+| `http://localhost:8081/owners?lastName=` | All owners list |
+| `http://localhost:8081/owners/{id}` | Owner detail (pets + visits) |
+| `http://localhost:8081/vets` | Vet list |
+| `http://localhost:8081/owners/find` | Owner search form (also used as health probe) |
 
 ### Performance Expectations
 
-Under moderate load (50-100 concurrent users):
+Under intensive load (100–200 concurrent users, 70% POST visits, 0.1–0.5 s wait):
 
-| Service | CPU Usage | Heap Usage | GC Frequency | Expected Bottleneck |
-|---------|-----------|------------|--------------|---------------------|
-| **customers-service** | 20-50% | 250-400 MB | 1-2 GC/min | CPU (JPA writes, object mapping) |
-| **visits-service** | 15-40% | 200-350 MB | 1 GC/min | Database I/O (transactions) |
-| **vets-service** | 5-15% | 150-250 MB | <1 GC/min | None (read-heavy, cached) |
-| **api-gateway** | 10-25% | 200-300 MB | 0.5-1 GC/min | Network I/O (routing overhead) |
-| **discovery-server** | 3-8% | 128-200 MB | <1 GC/min | None (heartbeats only) |
-
-Under high load (200+ concurrent users):
-- **customers-service** will hit CPU limits first (good HPA target, POST/PUT operations)
-- **visits-service** CPU increases due to transaction overhead (good HPA target)
-- **api-gateway** may experience increased latency due to routing volume
-- **vets-service** remains stable (caching prevents load growth)
+| Metric | Expected |
+|--------|---------|
+| CPU usage | 80–200% (exceeds 500m limit → throttling visible) |
+| Heap usage | 400–700 MB |
+| GC frequency | Moderate young-gen GC (Hibernate entity allocation) |
+| HPA scale-out | 1 → 3–5 replicas within ~2 min |
 
 ---
 
@@ -722,6 +678,101 @@ The OTel Java agent automatically exports these JVM metrics via OTLP:
 **Important label note:** OTel metrics use `host_name` (not `pod`) to identify the pod.
 The value of `host_name` is the Kubernetes pod name (e.g., `adservice-f94b6b478-c5r7r`).
 All Grafana dashboard queries use `host_name` for filtering.
+
+---
+
+## JVM Configuration Capture
+
+Beyond standard runtime metrics (heap, GC, CPU), the platform captures the **actual JVM configuration** at pod startup and surfaces it as Prometheus labels on every metric. This makes the Grafana JVM Overview dashboard show a per-pod config table without any hardcoding — the configuration is discovered dynamically from the running JVM.
+
+### End-to-End Pipeline
+
+```
+1. build-images.sh injects jvm-entrypoint.sh as Docker ENTRYPOINT
+        │
+        ▼
+2. Pod starts → jvm-entrypoint.sh runs first
+        │
+        ▼
+3. env -u JAVA_TOOL_OPTIONS java -XX:+PrintFlagsFinal -version
+   (JAVA_TOOL_OPTIONS unset to skip OTel agent — probe exits in milliseconds)
+        │
+        ▼
+4. Parse flags with awk → build OTEL_RESOURCE_ATTRIBUTES string
+   e.g. "jvm.config.gc=G1GC,jvm.config.heap.max=536870912,..."
+        │
+        ▼
+5. export OTEL_RESOURCE_ATTRIBUTES (appended to any existing K8s-set attrs)
+        │
+        ▼
+6. exec /opt/tomcat/bin/catalina.sh run
+   (Tomcat starts; OTel agent loads via JAVA_TOOL_OPTIONS)
+        │
+        ▼
+7. OTel agent reads OTEL_RESOURCE_ATTRIBUTES → attaches as resource attributes
+   to ALL JVM metrics exported via OTLP
+        │
+        ▼
+8. OTel Collector: resource_to_telemetry_conversion: enabled: true
+   Converts resource attrs → Prometheus labels (dots → underscores)
+   jvm.config.gc → jvm_config_gc
+        │
+        ▼
+9. Prometheus stores metrics with jvm_config_* labels on every time series
+        │
+        ▼
+10. Grafana panel 201: group by (jvm_config_gc, ...) → labelsToFields → table
+```
+
+### The jvm-entrypoint.sh Script
+
+**File:** `applications/petclinic/docker/jvm-entrypoint.sh`
+
+**Why unset `JAVA_TOOL_OPTIONS` for the probe?** The env var contains the OTel agent path (`-javaagent:/otel/opentelemetry-javaagent.jar`). If kept, the probe JVM would spend ~30 seconds loading and initializing the agent, then fail to connect to the Collector (the process exits immediately). By unsetting it, the probe exits in milliseconds with only the flags output.
+
+**Flag extraction** uses awk with exact field-name matching (field 2 in `PrintFlagsFinal` output):
+```sh
+get_flag() {
+  echo "$FLAGS" | awk -v f="$1" '$2 == f { print $4; exit }'
+}
+```
+
+### Captured Flags
+
+| OTel Attribute | JVM Flag | Description |
+|----------------|----------|-------------|
+| `jvm.config.gc` | `UseG1GC` / `UseZGC` / etc. | Active GC algorithm (G1GC, ZGC, Shenandoah, Parallel, Serial) |
+| `jvm.config.heap.max` | `MaxHeapSize` | Maximum heap in bytes |
+| `jvm.config.heap.init` | `InitialHeapSize` | Initial heap in bytes |
+| `jvm.config.gc.max.pause.ms` | `MaxGCPauseMillis` | GC pause target (ms) |
+| `jvm.config.gc.threads.parallel` | `ParallelGCThreads` | Parallel GC thread count |
+| `jvm.config.gc.threads.concurrent` | `ConcGCThreads` | Concurrent GC thread count |
+| `jvm.config.gc.g1.region.bytes` | `G1HeapRegionSize` | G1 heap region size in bytes |
+| `jvm.config.jit.tiered` | `TieredCompilation` | Tiered JIT compilation on/off |
+| `jvm.config.jit.compilers` | `CICompilerCount` | Number of JIT compiler threads |
+| `jvm.config.compressed.oops` | `UseCompressedOops` | Compressed object pointers on/off |
+| `jvm.config.cpu.count` | `ActiveProcessorCount` | CPU count visible to the JVM |
+
+### Label Propagation: OTel Attribute → Prometheus Label
+
+The OTel Collector's `resource_to_telemetry_conversion: enabled: true` setting converts every OTel resource attribute into a Prometheus label on **every metric** the service exports. The transformation is dots → underscores:
+
+| OTel Resource Attribute | Prometheus Label |
+|-------------------------|-----------------|
+| `jvm.config.gc` | `jvm_config_gc` |
+| `jvm.config.heap.max` | `jvm_config_heap_max` |
+| `process.runtime.version` | `process_runtime_version` |
+
+Because resource attributes are attached at the service level, **every** JVM metric (heap, GC, CPU, threads, classes) automatically carries these labels. You can filter or group by JVM configuration across all metric types.
+
+### Integration with build-images.sh
+
+`build-images.sh` appends the `jvm-entrypoint.sh` injection to the PetClinic `docker/Dockerfile` at build time:
+1. Copies `jvm-entrypoint.sh` into the Docker build context
+2. Adds `COPY jvm-entrypoint.sh /jvm-entrypoint.sh` and `RUN chmod +x /jvm-entrypoint.sh` to the Dockerfile
+3. Replaces the default `ENTRYPOINT` with `ENTRYPOINT ["/jvm-entrypoint.sh"]`
+
+This approach is non-invasive: the spring-framework-petclinic source is not modified. The entrypoint wraps the Tomcat launch command (`/opt/tomcat/bin/catalina.sh run`).
 
 ---
 
@@ -886,7 +937,7 @@ usage are more meaningful under load.
 
 **FRONTEND_URL values by application:**
 - **Online Boutique**: `http://frontend:80`
-- **PetClinic**: `http://api-gateway:8080`
+- **PetClinic**: `http://petclinic:8080`
 
 The `setup.sh` script uses `sed` to replace `__FRONTEND_URL__` placeholder in the manifest with the app-specific URL before applying.
 
@@ -909,11 +960,10 @@ This ConfigMap is mounted at `/locust/locustfile.py` in the load generator conta
 - Complete checkout (triggers checkout orchestrator, payment, shipping, email services)
 
 **PetClinic locustfile:**
-- Browse owners (60% of traffic - triggers customers-service with JPA queries)
-- View owner details including pets (20% of traffic - entity relationships, cache behavior)
-- Schedule visits (15% of traffic - triggers visits-service with DB writes, transactions)
-- Browse vets (5% of traffic - triggers vets-service, tests Spring Cache effectiveness)
-- Logout
+- Browse owners (40% of traffic) — `GET /owners?lastName=` DB query + JSP render
+- View owner details (30% of traffic) — `GET /owners/{id}` JOIN query with pets + visits
+- Submit new visit (20% of traffic) — `POST .../visits/new` DB insert, OTel instrumented
+- Browse vets (10% of traffic) — `GET /vets` Spring Cache hit (very cheap)
 
 **Task weights** model realistic conversion funnels (many browsers, few buyers).
 
@@ -946,7 +996,28 @@ and auto-imports them.
 **File:** `dashboards/jvm-overview.json`
 **UID:** `jvm-overview`
 
-This is the primary dashboard for JVM benchmarking. It has 4 sections with 8 panels:
+This is the primary dashboard for JVM benchmarking. It has 5 rows: a runtime info table at the top, plus 4 metric sections with 8 panels.
+
+#### JVM Runtime Info (Panel 201)
+
+A **table panel** at the top of the dashboard showing the actual JVM configuration of every running pod — GC algorithm, heap sizes, JIT settings, and more. The data comes from `jvm_config_*` Prometheus labels injected at startup by `jvm-entrypoint.sh`.
+
+**PromQL query** (deduplicates by grouping labels, tolerates metric gaps with `last_over_time`):
+```promql
+group by (host_name, process_runtime_version, jvm_config_gc, jvm_config_heap_max, jvm_config_heap_init,
+          jvm_config_gc_max_pause_ms, jvm_config_gc_threads_parallel, jvm_config_gc_threads_concurrent,
+          jvm_config_gc_g1_region_bytes, jvm_config_jit_tiered, jvm_config_jit_compilers,
+          jvm_config_compressed_oops, jvm_config_cpu_count)
+  (last_over_time(jvm_memory_used_bytes{host_name=~"$pod"}[5m]))
+```
+
+**Transformations:**
+1. `labelsToFields` (mode: columns) — turns each Prometheus label into a separate column
+2. `organize` — renames labels to human-readable headers (`jvm_config_gc` → `GC`, `jvm_config_heap_max` → `Max Heap`), hides `Time` and `Value`, defines column order
+
+**Unit overrides:** `Max Heap`, `Init Heap`, and `G1 Region` columns use the `bytes` unit so Grafana auto-formats them (e.g. `512 MiB`).
+
+See [JVM Configuration Capture](#jvm-configuration-capture) for how these labels are produced.
 
 #### Heap Memory
 - **Heap Memory (Used / Committed / Limit)**: Shows total heap usage with committed (orange
@@ -1182,50 +1253,33 @@ If dashboards don't appear, restart the Grafana pod to force the sidecar to resc
 kubectl rollout restart deployment/kube-prometheus-grafana -n monitoring
 ```
 
-### PetClinic services not starting
+### PetClinic pod not starting
 
-PetClinic has more complex startup requirements than Online Boutique. Common issues:
-
-**Problem: Services stuck at 0/1 READY with CrashLoopBackOff**
+**Problem: Pod stuck at 0/1 READY or startup probe failing**
 
 **Root causes and fixes:**
 
-1. **Config Server missing**: All PetClinic services require Spring Cloud Config Server.
-   - **Solution**: Ensure `config-server.yaml` is deployed before other services.
-   - Verify: `kubectl get svc config-server -n microservices-demo`
+1. **OTel agent init slow**: The init container downloads the OTel agent JAR (~23 MB). On slow networks, this may take 1–2 minutes.
+   - Verify: `kubectl logs -n microservices-demo deployment/petclinic -c download-otel-agent`
 
-2. **Wrong ports**: Services may start on port 8080 but health probes check service-specific ports.
-   - **Solution**: Each service must have `SERVER_PORT` environment variable set explicitly (8761 for discovery-server, 8080 for api-gateway, 8081 for customers-service, etc.)
-   - Verify: `kubectl logs -n microservices-demo deployment/customers-service | grep "Tomcat started on port"`
-
-3. **Out of Memory (OOMKilled)**: Spring Boot + Hibernate + Eureka + OTel agent uses ~350-500 MB.
-   - **Solution**: Memory limits must be at least 384Mi for discovery-server, 256Mi for other services.
-   - Check: `kubectl get pods -n microservices-demo | grep OOMKilled`
-
-4. **Startup timeout**: Spring Boot context initialization + Hibernate + Eureka registration + OTel agent can take 3-4 minutes.
-   - **Solution**: Startup probe `failureThreshold: 36` (6 minutes total with 10s periodSeconds)
+2. **Tomcat startup slow**: Tomcat + Spring context + Hibernate + OTel agent initialisation can take 1–3 minutes.
+   - Startup probe `failureThreshold: 36` (6 minutes total) should be enough.
    - Verify: `kubectl describe pod -n microservices-demo <pod-name> | grep "Startup probe failed"`
 
-5. **Localhost connection errors**: `SPRING_PROFILES_ACTIVE=docker` profile causes services to attempt localhost:8888 instead of config-server:8888.
-   - **Solution**: DO NOT use `SPRING_PROFILES_ACTIVE=docker`. Instead, explicitly set:
-     - `SPRING_CLOUD_CONFIG_URI=http://config-server:8888`
-     - `EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-server:8761/eureka`
-     - `SPRING_CLOUD_CONFIG_IMPORT_CHECK_ENABLED=false`
-   - Verify: `kubectl logs -n microservices-demo deployment/customers-service | grep UnknownHostException`
+3. **Out of Memory (OOMKilled)**: Tomcat + Spring + Hibernate + OTel agent needs ~400–700 MB.
+   - Memory limit is 1Gi. If OOMKilled: `kubectl get pods -n microservices-demo | grep OOMKilled`
 
-**Debugging steps:**
+**Debugging:**
 ```bash
-# 1. Check all pod status
-kubectl get pods -n microservices-demo -l app-type=petclinic
+# Check pod status
+kubectl get pods -n microservices-demo -l app=petclinic
 
-# 2. Check recent logs for errors
-kubectl logs -n microservices-demo deployment/customers-service --tail=50
+# Check logs
+kubectl logs -n microservices-demo deployment/petclinic --tail=50
 
-# 3. Test health endpoint directly
-kubectl exec -n microservices-demo deployment/customers-service -- curl -s http://localhost:8081/actuator/health
-
-# 4. Verify Eureka registration
-kubectl exec -n microservices-demo deployment/discovery-server -- curl -s http://localhost:8761/eureka/apps
+# Test endpoint directly
+kubectl exec -n microservices-demo deployment/petclinic -- \
+  wget -qO- http://localhost:8080/owners/find | head -c 200
 ```
 
 ### HPA not showing CPU metrics (shows `<unknown>`)
@@ -1261,123 +1315,39 @@ kubectl top pods -n microservices-demo
 # Check HPA status (should show actual CPU percentages)
 kubectl get hpa -n microservices-demo
 
-# Expected output:
-# NAME                REFERENCE                      TARGETS    MINPODS   MAXPODS   REPLICAS
-# customers-service   Deployment/customers-service   8%/70%     1         10        1
-# visits-service      Deployment/visits-service      7%/70%     1         8         1
+# Expected output (petclinic):
+# NAME       REFERENCE              TARGETS   MINPODS  MAXPODS  REPLICAS
+# petclinic  Deployment/petclinic   8%/70%    1        5        1
 ```
 
 **Note:** The `setup.sh` script does NOT install metrics-server automatically because it's only needed for HPA-based studies. Studies that use HPA should document this prerequisite in their README.
 
-### PetClinic: Empty database prevents load testing
-
-**Problem:** PetClinic starts with empty in-memory databases. Load tests fail because:
-- No owners exist → browse operations return `[]`
-- No pets exist → schedule_visit operations cannot run (need pet IDs)
-- CPU usage remains low because services process no actual data
-
-**Root cause:** PetClinic uses H2 in-memory databases without pre-loaded sample data.
-
-**Solution:** Seed the database before starting load tests:
-```bash
-# Run the seeding script (creates 50 owners with 2 pets each)
-./applications/petclinic/scripts/seed-database.sh
-
-# Or specify custom count
-NUM_OWNERS=100 ./applications/petclinic/scripts/seed-database.sh
-```
-
-**Verification:**
-```bash
-# Check database has data
-kubectl run test --image=curlimages/curl --rm -i --restart=Never -n microservices-demo \
-  -- curl -s http://customers-service:8081/owners | head -c 500
-
-# Should return JSON array with owner objects
-```
-
-**Why this matters for HPA:** Without data, services perform minimal work (returning empty arrays uses negligible CPU), preventing HPA from triggering even under high request volumes.
-
-### PetClinic: API Gateway returns 405 errors
-
-**Problem:** Requests through API Gateway fail with `405 Method Not Allowed`:
-```
-GET http://api-gateway:8080/api/customer/owners → 405
-POST http://api-gateway:8080/api/visit/owners/*/pets/{id}/visits → 405
-```
-
-**Root cause:** Spring Cloud Gateway routing rules misconfiguration. The gateway expects specific headers or path patterns that Locust doesn't provide.
-
-**Workaround:** Bypass the API gateway and access services directly in the locustfile:
-```python
-# Instead of routing through gateway:
-host = "http://api-gateway:8080"  # ❌ Returns 405
-
-# Access services directly:
-host = "http://customers-service.microservices-demo.svc.cluster.local:8081"  # ✅ Works
-
-# For visits-service, use full URL:
-self.client.post(
-    f"http://visits-service.microservices-demo.svc.cluster.local:8082/owners/*/pets/{pet_id}/visits",
-    json=payload
-)
-```
-
-**IMPORTANT:** Update `FRONTEND_URL` environment variable in loadgenerator deployment:
-```bash
-kubectl set env deployment/ak-loadgenerator -n microservices-demo \
-  FRONTEND_URL=http://customers-service.microservices-demo.svc.cluster.local:8081
-```
-
-The load generator's `online_test.py` script uses this variable to configure Locust's host, overriding the locustfile setting.
-
-**Trade-offs:**
-- ✅ **Pros**: Eliminates 405 errors, isolates load per service (better for HPA studies), more realistic for microservices testing
-- ⚠️ **Cons**: Doesn't test API Gateway (not representative of production traffic patterns)
-
 ### PetClinic: Load test not CPU-intensive enough for HPA
 
-**Problem:** Standard load test uses 60% read operations (GET requests) and only 15% writes. This creates minimal CPU load:
-- Read operations are cached or return small datasets
-- Low CPU usage (5-20%) even with 500-800 concurrent users
-- HPA never triggers (threshold is 70% CPU)
+**Problem:** Standard load test (40% reads, 20% writes, 1–3 s wait) may not generate enough CPU load under low user counts.
 
-**Root cause:** PetClinic services are efficient for typical workloads. Read operations don't create enough garbage collection pressure or CPU overhead.
-
-**Solution:** Use the CPU-intensive locustfile variant:
+**Solution:** Use the intensive locustfile variant (via `run-study.sh`, which sets it automatically):
 ```bash
-# Update ConfigMap to use intensive version
+# Apply manually:
 kubectl create configmap locust-tasks \
   --from-file=locustfile.py=applications/petclinic/locust/locustfile-intensive.py \
   -n microservices-demo --dry-run=client -o yaml | kubectl apply -f -
 
-# Restart load generator to pick up changes
 kubectl delete deployment ak-loadgenerator -n microservices-demo
 kubectl apply -f loadgenerator/loadgenerator.yaml
+kubectl set env deployment/ak-loadgenerator -n microservices-demo \
+  FRONTEND_URL=http://petclinic.microservices-demo.svc.cluster.local:8080
 ```
 
 **Key differences in intensive version:**
-- **70% write operations** (schedule_visit POST to visits-service) instead of 15%
-- **10x faster request rate**: wait_time `between(0.1, 0.5)` instead of `between(1, 3)`
-- **More aggressive user ramp**: 100 → 500 → 1000 → 1500 → 2000 users
+- **70% POST visits** (Hibernate insert + OTel span) instead of 20%
+- **10x faster wait time**: `between(0.1, 0.5)` instead of `between(1, 3)`
 
-**Expected results with intensive load:**
+**Expected results (150–200 users, intensive):**
 ```bash
-# After 2-3 minutes with 500+ users:
 kubectl get hpa -n microservices-demo
-
-NAME                REFERENCE                      TARGETS        MINPODS   MAXPODS   REPLICAS
-customers-service   Deployment/customers-service   cpu: 405%/70%  1         10        8
-visits-service      Deployment/visits-service      cpu: 475%/70%  1         8         7
-```
-
-**Verification:**
-```bash
-# Check load test is making write operations
-kubectl port-forward -n microservices-demo svc/ak-loadgenerator 8089:8089 &
-curl -s http://localhost:8089/stats/requests | jq '.stats[] | select(.name | contains("visit"))'
-
-# Should show thousands of requests to visit endpoints
+# NAME       REFERENCE              TARGETS       MINPODS  MAXPODS  REPLICAS
+# petclinic  Deployment/petclinic   cpu: 180%/70% 1        5        3
 ```
 
 ### ConfigMap changes not reflected in pods with subPath mounts
@@ -1408,7 +1378,10 @@ Simply deleting pods is not enough - you must delete and recreate the deployment
 | `setup.sh` | One-command cluster bootstrap |
 | `teardown.sh` | Destroy the cluster |
 | `kind-config.yaml` | Kind cluster: 3 nodes + port mappings |
-| `app/kubernetes-manifest.yaml` | Online Boutique (11 services) with OTel agent on adservice |
+| `applications/petclinic/docker/Dockerfile` | WAR + Tomcat 11 image with optional Java version |
+| `applications/petclinic/docker/build-images.sh` | Maven + Docker build script (Java version selectable, Docker-based Maven fallback) |
+| `applications/petclinic/docker/jvm-entrypoint.sh` | Docker entrypoint: captures JVM flags at startup, launches Tomcat with OTel agent |
+| `applications/online-boutique/kubernetes-manifests/online-boutique.yaml` | Online Boutique (11 services) with OTel agent on adservice |
 | `monitoring/kube-prometheus-values.yaml` | Helm values for Prometheus + Grafana |
 | `monitoring/otel-collector.yaml` | OTel Collector: ConfigMap + Deployment + Service |
 | `monitoring/servicemonitors.yaml` | Prometheus ServiceMonitor for Locust metrics |

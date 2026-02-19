@@ -9,6 +9,99 @@
     {
       "collapsed": false,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 200,
+      "title": "JVM Runtime Info",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left",
+            "displayMode": "auto",
+            "minWidth": 120
+          },
+          "noValue": "N/A"
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Max Heap" },
+            "properties": [{ "id": "unit", "value": "bytes" }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Init Heap" },
+            "properties": [{ "id": "unit", "value": "bytes" }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "G1 Region" },
+            "properties": [{ "id": "unit", "value": "bytes" }]
+          }
+        ]
+      },
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 1 },
+      "id": 201,
+      "options": {
+        "footer": { "show": false },
+        "showHeader": true,
+        "sortBy": [{ "desc": false, "displayName": "Service" }]
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "group by (host_name, process_runtime_version, jvm_config_gc, jvm_config_heap_max, jvm_config_heap_init, jvm_config_gc_max_pause_ms, jvm_config_gc_threads_parallel, jvm_config_gc_threads_concurrent, jvm_config_gc_g1_region_bytes, jvm_config_jit_tiered, jvm_config_jit_compilers, jvm_config_compressed_oops, jvm_config_cpu_count) (last_over_time(jvm_memory_used_bytes{host_name=~\"$pod\"}[5m]))",
+          "instant": true,
+          "legendFormat": "{{host_name}}"
+        }
+      ],
+      "title": "JVM Configuration (from -XX:+PrintFlagsFinal)",
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": { "mode": "columns" }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true, "Value": true },
+            "renameByName": {
+              "host_name": "Service",
+              "process_runtime_version": "Java Version",
+              "jvm_config_gc": "GC",
+              "jvm_config_heap_max": "Max Heap",
+              "jvm_config_heap_init": "Init Heap",
+              "jvm_config_gc_max_pause_ms": "Max GC Pause (ms)",
+              "jvm_config_gc_threads_parallel": "Par Threads",
+              "jvm_config_gc_threads_concurrent": "Conc Threads",
+              "jvm_config_gc_g1_region_bytes": "G1 Region",
+              "jvm_config_jit_tiered": "Tiered JIT",
+              "jvm_config_jit_compilers": "JIT Compilers",
+              "jvm_config_compressed_oops": "Compressed OOPs",
+              "jvm_config_cpu_count": "CPUs"
+            },
+            "indexByName": {
+              "Service": 0,
+              "Java Version": 1,
+              "GC": 2,
+              "Max Heap": 3,
+              "Init Heap": 4,
+              "Max GC Pause (ms)": 5,
+              "Par Threads": 6,
+              "Conc Threads": 7,
+              "G1 Region": 8,
+              "Tiered JIT": 9,
+              "JIT Compilers": 10,
+              "Compressed OOPs": 11,
+              "CPUs": 12
+            }
+          }
+        }
+      ],
+      "type": "table"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
       "id": 100,
       "title": "Heap Memory",
       "type": "row"
@@ -40,7 +133,7 @@
           }
         ]
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
       "id": 1,
       "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] } },
       "targets": [
@@ -72,7 +165,7 @@
           "unit": "bytes"
         }
       },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
       "id": 2,
       "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] } },
       "targets": [
@@ -87,7 +180,7 @@
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 },
       "id": 101,
       "title": "Garbage Collection",
       "type": "row"
@@ -101,7 +194,7 @@
           "unit": "ops"
         }
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
       "id": 3,
       "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] } },
       "targets": [
@@ -123,7 +216,7 @@
           "unit": "s"
         }
       },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
       "id": 4,
       "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] } },
       "targets": [
@@ -143,7 +236,7 @@
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 },
       "id": 102,
       "title": "Threads & CPU",
       "type": "row"
@@ -157,7 +250,7 @@
           "unit": "short"
         }
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 19 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
       "id": 5,
       "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] } },
       "targets": [
@@ -180,7 +273,7 @@
           "max": 1
         }
       },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 19 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
       "id": 6,
       "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] } },
       "targets": [
@@ -200,7 +293,7 @@
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 32 },
       "id": 103,
       "title": "Non-Heap Memory & Classes",
       "type": "row"
@@ -214,7 +307,7 @@
           "unit": "bytes"
         }
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 33 },
       "id": 7,
       "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] } },
       "targets": [
@@ -236,7 +329,7 @@
           "unit": "short"
         }
       },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 33 },
       "id": 8,
       "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] } },
       "targets": [

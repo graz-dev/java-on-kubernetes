@@ -20,6 +20,7 @@ error() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 # 0. Parse arguments
 # -------------------------------------------------------------------
 APP_NAME="online-boutique"  # Default application
+JAVA_VERSION="17"           # Default Java version (uses official images, no build needed)
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -27,8 +28,12 @@ while [[ $# -gt 0 ]]; do
       APP_NAME="$2"
       shift 2
       ;;
+    --java-version)
+      JAVA_VERSION="$2"
+      shift 2
+      ;;
     *)
-      error "Unknown argument: $1. Usage: $0 [--app <name>]"
+      error "Unknown argument: $1. Usage: $0 [--app <name>] [--java-version <N>]"
       ;;
   esac
 done
@@ -38,7 +43,14 @@ if [ ! -d "$SCRIPT_DIR/applications/$APP_NAME" ]; then
   error "Application '$APP_NAME' not found. Available: $(ls -1 $SCRIPT_DIR/applications/ | grep -v _template | tr '\n' ' ')"
 fi
 
+# --java-version only applies to petclinic
+if [[ "$JAVA_VERSION" != "17" && "$APP_NAME" != "petclinic" ]]; then
+  warn "--java-version ignored for '$APP_NAME' (only petclinic supports custom Java versions)"
+  JAVA_VERSION="17"
+fi
+
 info "Selected application: $APP_NAME"
+info "Java version: $JAVA_VERSION"
 
 # -------------------------------------------------------------------
 # 1. Prerequisites check
@@ -66,13 +78,20 @@ ARCH=$(uname -m)
 case "$ARCH" in
   x86_64|amd64)
     info "Architecture: x86_64 (Intel/AMD)"
+    ARCH="x86_64"
     ;;
   arm64|aarch64)
     info "Architecture: arm64 (Apple Silicon)"
+    ARCH="arm64"
     # Check if app has native arm64 support
     case "$APP_NAME" in
       petclinic)
-        info "✓ PetClinic has native arm64 images (no emulation needed)"
+        if [[ "$JAVA_VERSION" == "17" ]]; then
+          warn "Official springcommunity/spring-framework-petclinic image is Java 17 (amd64)."
+          warn "It will run under QEMU emulation on arm64. For native arm64, build with --java-version 25."
+        else
+          info "✓ Custom Java $JAVA_VERSION image will be native arm64 (no emulation)."
+        fi
         ;;
       online-boutique)
         warn "Docker images will run under QEMU emulation (slower startup)"
@@ -91,6 +110,33 @@ esac
 echo ""
 
 # -------------------------------------------------------------------
+# 1b. (petclinic only) Ensure custom Java image is available locally
+# -------------------------------------------------------------------
+PETCLINIC_IMAGE="localhost/spring-framework-petclinic:java${JAVA_VERSION}-${ARCH}"
+
+if [[ "$APP_NAME" == "petclinic" && "$JAVA_VERSION" != "17" ]]; then
+  info "Checking local image for Java $JAVA_VERSION..."
+
+  if ! docker image inspect "$PETCLINIC_IMAGE" &>/dev/null; then
+    warn "Image not found locally: $PETCLINIC_IMAGE"
+    echo ""
+    read -r -p "  Build it now? This requires Java $JAVA_VERSION and Maven (~15-20 min). (y/N) " BUILD_CONFIRM
+    echo ""
+
+    if [[ "$BUILD_CONFIRM" =~ ^[Yy]$ ]]; then
+      info "Building Java $JAVA_VERSION image..."
+      info "If local Java/Maven are missing, the build will run inside a Docker container automatically."
+      "$SCRIPT_DIR/applications/petclinic/docker/build-images.sh" --java-version "$JAVA_VERSION"
+      echo ""
+    else
+      error "Cannot proceed without image. Run: ./applications/petclinic/docker/build-images.sh --java-version $JAVA_VERSION --load-to-kind"
+    fi
+  else
+    info "Java $JAVA_VERSION image found: $PETCLINIC_IMAGE"
+  fi
+fi
+
+# -------------------------------------------------------------------
 # 2. Create Kind cluster
 # -------------------------------------------------------------------
 if kind get clusters 2>/dev/null | grep -q "^${CLUSTER_NAME}$"; then
@@ -102,6 +148,17 @@ fi
 
 kubectl cluster-info --context "kind-$CLUSTER_NAME"
 echo ""
+
+# -------------------------------------------------------------------
+# 2b. (petclinic only) Load custom Java image into Kind
+# -------------------------------------------------------------------
+if [[ "$APP_NAME" == "petclinic" && "$JAVA_VERSION" != "17" ]]; then
+  info "Loading Java $JAVA_VERSION image into Kind cluster..."
+  echo "  Loading: $PETCLINIC_IMAGE"
+  kind load docker-image "$PETCLINIC_IMAGE" --name "$CLUSTER_NAME"
+  info "Image loaded."
+  echo ""
+fi
 
 # -------------------------------------------------------------------
 # 3. Create namespaces
@@ -148,10 +205,20 @@ kubectl apply -f "$SCRIPT_DIR/monitoring/servicemonitors.yaml"
 # -------------------------------------------------------------------
 # 7. Deploy application
 # -------------------------------------------------------------------
-info "Deploying $APP_NAME application..."
-for manifest in "$SCRIPT_DIR/applications/$APP_NAME/kubernetes-manifests"/*.yaml; do
-  kubectl apply -f "$manifest" -n "$NAMESPACE"
-done
+info "Deploying $APP_NAME application (Java $JAVA_VERSION)..."
+
+if [[ "$APP_NAME" == "petclinic" && "$JAVA_VERSION" != "17" ]]; then
+  # Swap official image for locally built one and prevent remote pull
+  sed \
+    -e "s|springcommunity/spring-framework-petclinic:latest|${PETCLINIC_IMAGE}|g" \
+    -e "s|imagePullPolicy: IfNotPresent|imagePullPolicy: Never|g" \
+    "$SCRIPT_DIR/applications/petclinic/kubernetes-manifests/petclinic.yaml" | \
+    kubectl apply -f - -n "$NAMESPACE"
+else
+  for manifest in "$SCRIPT_DIR/applications/$APP_NAME/kubernetes-manifests"/*.yaml; do
+    kubectl apply -f "$manifest" -n "$NAMESPACE"
+  done
+fi
 
 # -------------------------------------------------------------------
 # 8. Deploy load generator with a default continuous scenario
@@ -178,7 +245,7 @@ case "$APP_NAME" in
     FRONTEND_URL="http://frontend:80"
     ;;
   petclinic)
-    FRONTEND_URL="http://api-gateway:8080"
+    FRONTEND_URL="http://petclinic:8080"
     ;;
   *)
     warn "Unknown app '$APP_NAME', using default FRONTEND_URL"
@@ -222,6 +289,7 @@ info "  Setup complete!"
 info "============================================"
 echo ""
 echo "  Application: $APP_NAME"
+echo "  Java:        $JAVA_VERSION"
 echo ""
 echo "  Access points (available immediately via Kind port mappings):"
 echo ""
@@ -234,8 +302,7 @@ case "$APP_NAME" in
     echo "  Frontend:  http://localhost:8080"
     ;;
   petclinic)
-    echo "  API Gateway: http://localhost:8081/api/customer/owners"
-    echo "  Eureka UI:   http://localhost:8081/eureka"
+    echo "  Frontend:  http://localhost:8081"
     ;;
   *)
     echo "  Frontend:  See applications/$APP_NAME/README.md for endpoints"
