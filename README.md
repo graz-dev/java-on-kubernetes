@@ -131,7 +131,7 @@ The framework supports multiple applications, each with different characteristic
 ./setup.sh --app online-boutique
 
 # Use PetClinic (recommended for benchmarking)
-./setup.sh --app petclinic
+./setup.sh --app petclinic --java-version 25
 
 # List available applications
 ls -1 applications/ | grep -v _template
