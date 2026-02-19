@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: test-scenario
+  namespace: microservices-demo
+data:
+  scenario.json: |
+    [
+      {"n_users": 100, "spawn_rate": 10, "duration": 60},
+      {"n_users": 500, "spawn_rate": 20, "duration": 180},
+      {"n_users": 1000, "spawn_rate": 30, "duration": 300},
+      {"n_users": 1500, "spawn_rate": 40, "duration": 300},
+      {"n_users": 2000, "spawn_rate": 50, "duration": 300}
+    ]

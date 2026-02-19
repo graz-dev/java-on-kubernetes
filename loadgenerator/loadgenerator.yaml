@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ak-loadgenerator
+  namespace: microservices-demo
+spec:
+  selector:
+    matchLabels:
+      app: ak-loadgenerator
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: ak-loadgenerator
+    spec:
+      serviceAccountName: default
+      terminationGracePeriodSeconds: 5
+      nodeSelector:
+        node-role: tools
+      restartPolicy: Always
+      containers:
+        - name: locust-exporter
+          image: containersol/locust_exporter
+          env:
+            - name: LOCUST_EXPORTER_URI
+              value: "http://localhost:8089"
+          ports:
+            - containerPort: 9646
+              name: metrics
+        - name: main
+          imagePullPolicy: Always
+          image: public.ecr.aws/z8r9m6n1/microservices-demo/loadgenerator:0.3.9
+          ports:
+            - name: web-ui
+              containerPort: 8089
+          env:
+            - name: RUN_ONLINE
+              value: "True"
+            - name: SCENARIO_JSON
+              value: "scenario.json"
+            - name: FRONTEND_URL
+              value: "__FRONTEND_URL__"
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: LOCUST_URL
+              value: "http://0.0.0.0:8089"
+            - name: GAUSSIAN_NOISE_VARIANCE_PERCENTAGE
+              value: "0"
+          resources:
+            requests:
+              cpu: 300m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 512Mi
+          volumeMounts:
+            - name: test-scenario
+              mountPath: "/scenarios/"
+              readOnly: true
+            - name: locust-tasks
+              mountPath: "/loadgen/locustfile.py"
+              subPath: "locustfile.py"
+              readOnly: true
+      volumes:
+        - name: test-scenario
+          configMap:
+            name: test-scenario
+        - name: locust-tasks
+          configMap:
+            name: locust-tasks
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ak-loadgenerator
+  namespace: microservices-demo
+  labels:
+    app: ak-loadgenerator
+spec:
+  type: NodePort
+  selector:
+    app: ak-loadgenerator
+  ports:
+    - name: web-ui
+      protocol: TCP
+      port: 8089
+      targetPort: 8089
+      nodePort: 30899
+    - name: metrics
+      port: 9646
+      targetPort: 9646

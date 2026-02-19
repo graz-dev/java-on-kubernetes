@@ -1,0 +1,31 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      # Grafana → localhost:3000
+      - containerPort: 30300
+        hostPort: 3000
+        protocol: TCP
+      # Locust UI → localhost:8089
+      - containerPort: 30899
+        hostPort: 8089
+        protocol: TCP
+      # Online Boutique Frontend → localhost:8080
+      - containerPort: 30080
+        hostPort: 8080
+        protocol: TCP
+      # PetClinic API Gateway → localhost:8081
+      - containerPort: 30081
+        hostPort: 8081
+        protocol: TCP
+      # PetClinic Discovery Server (Eureka) → localhost:8761
+      - containerPort: 30761
+        hostPort: 8761
+        protocol: TCP
+  - role: worker
+    labels:
+      node-role: workload
+  - role: worker
+    labels:
+      node-role: tools

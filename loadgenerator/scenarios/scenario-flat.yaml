@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hipster-shop
+  labels:
+    istio-injection: enabled
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: test-scenario
+  namespace: microservices-demo
+data:
+  scenario.json: |
+    [
+      {
+        "n_users": 200,
+        "spawn_rate": 10,
+        "duration": 5
+      }
+    ]

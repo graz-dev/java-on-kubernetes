@@ -1,0 +1,17 @@
+# Load scenario ConfigMap template
+# Customize the phases below to match your study's load requirements.
+# Apply with: kubectl apply -f scenario-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: test-scenario
+  namespace: microservices-demo
+data:
+  scenario.json: |
+    [
+      {
+        "n_users": 100,
+        "spawn_rate": 10,
+        "duration": 30
+      }
+    ]

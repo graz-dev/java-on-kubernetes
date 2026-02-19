@@ -1,0 +1,64 @@
+# Helm values for kube-prometheus-stack
+# Optimized for local Kind cluster benchmarking
+#
+# Install with:
+#   helm install kube-prometheus prometheus-community/kube-prometheus-stack \
+#     --namespace monitoring --values monitoring/kube-prometheus-values.yaml
+
+grafana:
+  nodeSelector:
+    node-role: tools
+  adminUser: admin
+  adminPassword: admin
+  service:
+    type: NodePort
+    nodePort: 30300
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL
+      folderAnnotation: grafana_folder
+  defaultDashboardsEnabled: false
+  defaultDashboardsTimezone: browser
+
+prometheus:
+  prometheusSpec:
+    nodeSelector:
+      node-role: tools
+    # Allow OTel Collector to push metrics via remote write
+    enableRemoteWriteReceiver: true
+    # Scrape all ServiceMonitors regardless of labels
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    # Resource limits appropriate for Kind
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+    # Retain metrics for 7 days
+    retention: 7d
+
+# Disable alertmanager (not needed for benchmarking)
+alertmanager:
+  enabled: false
+
+# Node exporter on all nodes (useful for seeing node resource usage)
+nodeExporter:
+  enabled: true
+
+# kube-state-metrics (needed for HPA metrics)
+kubeStateMetrics:
+  enabled: true
+kube-state-metrics:
+  nodeSelector:
+    node-role: tools
+
+# Prometheus operator
+prometheusOperator:
+  nodeSelector:
+    node-role: tools

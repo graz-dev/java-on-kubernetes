@@ -1,0 +1,18 @@
+# Load scenario for HPA autoscaling study
+# Spike-and-ramp pattern designed to trigger multiple scaling events
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: test-scenario
+  namespace: microservices-demo
+data:
+  scenario.json: |
+    [
+      {"n_users": 50,  "spawn_rate": 10, "duration": 10},
+      {"n_users": 200, "spawn_rate": 5,  "duration": 5},
+      {"n_users": 500, "spawn_rate": 10, "duration": 20},
+      {"n_users": 200, "spawn_rate": 5,  "duration": 5},
+      {"n_users": 50,  "spawn_rate": 10, "duration": 10},
+      {"n_users": 800, "spawn_rate": 20, "duration": 20},
+      {"n_users": 50,  "spawn_rate": 10, "duration": 10}
+    ]
