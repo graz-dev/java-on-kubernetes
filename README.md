@@ -82,7 +82,7 @@ This prevents monitoring overhead from affecting benchmark measurements.
 │   │   ├── README.md
 │   │   ├── kubernetes-manifests/
 │   │   └── locust/
-│   └── petclinic/                    # Spring PetClinic Microservices (5 JVM services)
+│   └── petclinic/                    # Spring Framework PetClinic (single WAR on Tomcat 11)
 │       ├── README.md
 │       ├── kubernetes-manifests/
 │       ├── locust/
@@ -117,7 +117,7 @@ The framework supports multiple applications, each with different characteristic
 | Application | JVM Services | Best For | Workload Types |
 |-------------|-------------|----------|----------------|
 | **online-boutique** | 1 (adservice) | Simple setup, lightweight workloads | Ad retrieval (HashMap lookups) |
-| **petclinic** | 5 (discovery-server, api-gateway, customers-service, visits-service, vets-service) | Realistic benchmarking, Spring Boot applications | CPU-intensive (DB writes, JPA), memory-intensive (caching), I/O-intensive (transactions) |
+| **petclinic** | 1 (single WAR on Tomcat 11) | Realistic benchmarking, Spring MVC + Hibernate | CPU-intensive POST visits (Hibernate transaction + OTel), cached GET /vets |
 
 **Recommendation**: Use **PetClinic** for serious benchmarking. Online Boutique's adservice is too lightweight — it only does HashMap lookups and rarely triggers HPA scaling or significant GC activity.
 
@@ -131,7 +131,7 @@ The framework supports multiple applications, each with different characteristic
 ./setup.sh --app online-boutique
 
 # Use PetClinic (recommended for benchmarking)
-./setup.sh --app petclinic
+./setup.sh --app petclinic --java-version 25
 
 # List available applications
 ls -1 applications/ | grep -v _template
@@ -274,34 +274,26 @@ All JVM services are instrumented with the **OpenTelemetry Java agent**, which a
 
 ### PetClinic (Recommended)
 
-- **5 JVM services**: discovery-server, api-gateway, customers-service, visits-service, vets-service
+- **Single WAR**: Spring MVC 7 + Hibernate + H2 in-memory DB, deployed on Apache Tomcat 11
 - **Workload types**:
-  - **CPU-intensive**: customers-service (database writes, JPA object mapping)
-  - **I/O-intensive**: visits-service (complex queries, transaction management)
-  - **Memory-intensive**: vets-service (read-heavy caching via Spring Cache)
-  - **Gateway pattern**: api-gateway (request routing, load balancing overhead)
-  - **Service discovery**: discovery-server (Eureka heartbeats, registry updates)
+  - **DB writes**: `POST /owners/{id}/pets/{petId}/visits/new` — Hibernate transaction + H2 write + OTel span
+  - **DB reads**: `GET /owners/{id}` — JOIN query (owner + pets + visits)
+  - **Cached reads**: `GET /vets` — Spring Cache (very cheap)
 - **Benefits**:
-  - Heterogeneous workloads reveal different JVM performance characteristics
-  - Real Spring Boot patterns (Spring Data JPA, Spring Cloud, embedded Tomcat)
-  - Native arm64 support (no QEMU emulation needed)
-  - Easy to upgrade to Java 25 for benchmarking latest JVM features
+  - Pre-populated H2 sample data (10 owners, 13 pets) — no seeding step needed
+  - Single HPA target (one deployment), deterministic scaling behaviour
+  - Native arm64 support (official image is amd64 only; custom builds are native)
+  - Easy to benchmark Java 17 / 21 / 25 with `--java-version`
 
-**Important for HPA/Autoscaling Studies:**
+**HPA/Autoscaling Studies:**
 
-PetClinic requires database seeding before load testing:
+No seeding required — H2 data is pre-loaded at pod startup. Use the intensive locustfile (70% POSTs) to trigger CPU-based HPA scaling:
 ```bash
-# Seed with sample data (50 owners, 100 pets)
-./applications/petclinic/scripts/seed-database.sh
+# Run the HPA study (deploys petclinic, runs intensive load, watches scaling)
+./studies/hpa-autoscaling/run-study.sh
 ```
 
-For CPU-intensive load (to trigger HPA scaling), use the intensive load test variant:
-```bash
-# Use locustfile-intensive.py (70% writes, 10x faster)
-# See studies/hpa-autoscaling/README.md for detailed setup
-```
-
-Use the **JVM Overview** dashboard in Grafana to compare metrics across all services.
+Use the **JVM Overview** dashboard in Grafana to observe GC, heap, and CPU metrics.
 
 ## Credits
 

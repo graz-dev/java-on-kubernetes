@@ -1,240 +1,154 @@
-# Spring PetClinic Microservices
+# Spring Framework PetClinic
 
-A microservices version of the classic Spring PetClinic application, designed for cloud-native deployments and JVM benchmarking.
+A single-service Spring MVC web application designed for JVM benchmarking.
 
 ## Overview
 
-Spring PetClinic Microservices is a distributed version of the famous Spring PetClinic application, decomposed into multiple independent services. It demonstrates Spring Boot, Spring Cloud, and microservices patterns including service discovery, API gateway, circuit breakers, and distributed tracing.
+Spring Framework PetClinic is the classic Spring MVC + JSP veterinary clinic application.
+It runs as a single WAR on Tomcat 11 with an H2 in-memory database pre-populated with sample data at startup.
 
-**Source**: https://github.com/spring-petclinic/spring-petclinic-microservices
+**Source**: https://github.com/spring-petclinic/spring-framework-petclinic
 
 ## Architecture
 
 ```
-                                   ┌─────────────┐
-                                   │   Clients   │
-                                   └──────┬──────┘
-                                          │
-                                   ┌──────▼──────────┐
-                                   │  API Gateway    │ (8080)
-                                   │  (Spring Cloud) │
-                                   └────────┬────────┘
-                                            │
-                  ┌─────────────────────────┼─────────────────────────┐
-                  │                         │                         │
-         ┌────────▼─────────┐    ┌─────────▼────────┐    ┌──────────▼─────────┐
-         │ Customers Service│    │  Visits Service  │    │   Vets Service     │
-         │  (Customer/Pet)  │    │ (Appointments)   │    │ (Veterinarians)    │
-         └──────────────────┘    └──────────────────┘    └────────────────────┘
-                  │                         │                         │
-                  └─────────────────────────┼─────────────────────────┘
-                                            │
-                                   ┌────────▼─────────┐
-                                   │  Discovery       │
-                                   │  (Eureka)        │
-                                   └──────────────────┘
+                           ┌─────────────┐
+                           │   Clients   │
+                           └──────┬──────┘
+                                  │ HTTP
+                           ┌──────▼──────┐
+                           │  petclinic  │ :8080  (NodePort 30081)
+                           │ Spring MVC  │
+                           │ Tomcat 11   │
+                           │ H2 in-mem   │
+                           └─────────────┘
 ```
 
-## Services
+No service discovery. No config server. No API gateway. One pod, one HPA target.
 
-| Service | Purpose | Workload Type | Port | Java Version |
-|---------|---------|---------------|------|--------------|
-| **api-gateway** | Routes requests to backend services, load balancing | I/O-intensive | 8080 | 25 |
-| **customers-service** | Manages customers and their pets (CRUD operations) | Memory-intensive (caching) | 8081 | 25 |
-| **visits-service** | Manages vet visit appointments and history | I/O-intensive (database queries) | 8082 | 25 |
-| **vets-service** | Manages veterinarian information and specialties | Memory-intensive (read-heavy) | 8083 | 25 |
-| **discovery-server** | Eureka service registry for service discovery | CPU-light, memory-moderate | 8761 | 25 |
+## Key Facts
 
-**Total JVM services**: 5 (all Spring Boot microservices)
+| Property | Value |
+|----------|-------|
+| Framework | Spring Framework 7.0.3 (not Spring Boot) |
+| Runtime | Tomcat 11 embedded |
+| Database | H2 in-memory, **pre-populated at startup** |
+| Port | 8080 (NodePort 30081) |
+| Official image | `springcommunity/spring-framework-petclinic:latest` (Java 17, amd64) |
+| Sample owners | 10 (IDs 1–10) |
+| Sample pets | 13 (IDs 1–13) |
 
-## Key Features for Benchmarking
+## Pre-populated Sample Data
 
-### Heterogeneous Workloads
+The H2 database is seeded at startup from `src/main/resources/db/h2/data.sql`.
+No external seeding step is required.
 
-- **API Gateway**: High connection count, request routing overhead
-- **Customers Service**: Database writes, object serialization, Spring Data JPA
-- **Visits Service**: Complex queries, JOIN operations, transaction management
-- **Vets Service**: Read-heavy caching (Spring Cache), minimal writes
-- **Discovery Server**: Heartbeat processing, service registry updates
+| Resource | IDs |
+|----------|-----|
+| Owners | 1–10 |
+| Pets | 1–13 (fixed owner mapping) |
+| Vets | 6 |
 
-### JVM Characteristics
+## Web UI Endpoints
 
-- **Heap usage**: Spring Boot baseline ~200-400 MB per service
-- **GC activity**: Varies by workload (customers-service creates more garbage than vets-service)
-- **Thread pools**: Tomcat embedded server (default 200 threads), async processing
-- **Class loading**: Spring context initialization, lazy vs eager bean loading
+All requests hit the single `petclinic` service at `http://localhost:8081`.
 
-### HPA Targets
-
-Recommended services for HPA autoscaling studies:
-
-1. **customers-service** - CPU scales with write operations (POST/PUT)
-2. **visits-service** - CPU scales with complex queries and transaction overhead
-3. **api-gateway** - Scales with total request volume across all endpoints
-
-## API Endpoints
-
-All requests go through the API Gateway at `http://api-gateway:8080/api`.
-
-### Customer Endpoints
-
-```
-GET    /api/customer/owners          - List all owners
-GET    /api/customer/owners/{id}     - Get owner details (includes pets)
-POST   /api/customer/owners          - Create new owner
-PUT    /api/customer/owners/{id}     - Update owner
-GET    /api/customer/owners/*/pets/{id} - Get pet details
-POST   /api/customer/owners/{id}/pets   - Add pet to owner
-```
-
-### Visit Endpoints
-
-```
-GET    /api/visit/owners/*/pets/{petId}/visits  - List visits for a pet
-POST   /api/visit/owners/*/pets/{petId}/visits  - Schedule new visit
-```
-
-### Vet Endpoints
-
-```
-GET    /api/vet/vets                 - List all veterinarians (with specialties)
-```
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/owners?lastName=` | GET | List all owners (DB query + JSP render) |
+| `/owners/{id}` | GET | Owner detail with pets and visits (JOIN query) |
+| `/owners/{ownerId}/pets/{petId}/visits/new` | POST | Submit new visit (DB insert → redirect) |
+| `/vets` | GET | Vet list (Spring Cache — very cheap) |
+| `/owners/find` | GET | Owner search form (used as health probe) |
 
 ## Load Testing
 
 ### Standard Load Test
 
-The Locust load generator simulates realistic user workflows:
+The Locust load generator simulates realistic user behaviour:
 
-1. **Browse owners** (60% of traffic) - GET /api/customer/owners
-2. **View owner details** (20% of traffic) - GET /api/customer/owners/{id}
-3. **Schedule visit** (15% of traffic) - POST /api/visit/owners/*/pets/{petId}/visits
-4. **Browse vets** (5% of traffic) - GET /api/vet/vets
+1. **Browse owners** (40% of traffic) — `GET /owners?lastName=`
+2. **View owner details** (30% of traffic) — `GET /owners/{id}`
+3. **Submit new visit** (20% of traffic) — `POST .../visits/new`
+4. **Browse vets** (10% of traffic) — `GET /vets`
 
-These ratios create a read-heavy workload with occasional writes, typical of a veterinary clinic application.
+No JSON parsing — IDs are hard-coded from sample data (no warm-up phase needed).
 
 ### CPU-Intensive Load Test for HPA
 
-For autoscaling studies, use the intensive variant (`locustfile-intensive.py`):
+For autoscaling studies (`locustfile-intensive.py`):
 
-- **70% write operations** (schedule_visit) - CPU-intensive POST operations
-- **15% view owner details** - Moderate reads
-- **10% browse owners** - Light reads for data availability
-- **5% browse vets** - Minimal reads
-- **10x faster wait time** (0.1-0.5s vs 1-3s) - Generates significantly more RPS
+- **70% POST visits** — DB insert + Hibernate transaction + OTel instrumentation overhead
+- **20% GET owner details** — JOIN query
+- **10% GET owners list** — list query
+- **10x faster wait time** (0.1–0.5 s vs 1–3 s)
 
-This configuration generates enough CPU load to trigger HPA autoscaling (>70% CPU threshold).
+This generates enough CPU load to trigger HPA autoscaling (>70% CPU threshold).
 
-### Database Seeding (Required)
+### No Database Seeding Required
 
-PetClinic starts with an **empty database**. Before load testing, seed the database with test data:
-
-```bash
-# From repository root
-./applications/petclinic/scripts/seed-database.sh
-
-# Or manually specify number of owners
-NUM_OWNERS=100 ./applications/petclinic/scripts/seed-database.sh
-```
-
-This creates:
-- N owners (default: 50)
-- 2 pets per owner (dog and cat)
-- Required for load test to function (schedule_visit needs existing pets)
+Unlike the microservices version, `spring-framework-petclinic` ships with pre-populated H2 data. Load tests work immediately after pod startup.
 
 ## OpenTelemetry Instrumentation
 
-All 5 JVM services are instrumented with the OpenTelemetry Java agent (v2.10.0), exporting metrics to the OTel Collector:
+The pod uses the init-container pattern to inject the OTel Java agent v2.10.0:
 
-- **JVM metrics**: Heap, GC, threads, CPU, class loading
-- **HTTP metrics**: Request rate, latency, error rate (via Spring Boot Actuator + OTel)
-- **Custom metrics**: Spring-specific metrics (Tomcat threads, datasource connections, cache stats)
+```yaml
+initContainers:
+  - name: download-otel-agent
+    image: busybox:1.36
+    command: [wget, -O, /otel/opentelemetry-javaagent.jar, <url>]
+```
 
-Metrics are available in Prometheus and visualized in the **JVM Overview** Grafana dashboard.
+Metrics exported via OTLP HTTP to the OTel Collector → Prometheus → Grafana.
 
 ## Resource Requirements
 
-| Service | CPU Request | CPU Limit | Memory Request | Memory Limit |
-|---------|-------------|-----------|----------------|--------------|
-| api-gateway | 100m | 500m | 256Mi | 512Mi |
-| customers-service | 100m | 500m | 256Mi | 512Mi |
-| visits-service | 100m | 500m | 256Mi | 512Mi |
-| vets-service | 50m | 300m | 128Mi | 256Mi |
-| discovery-server | 50m | 300m | 128Mi | 256Mi |
+| Resource | Request | Limit |
+|----------|---------|-------|
+| CPU | 200m | 500m |
+| Memory | 512Mi | 1Gi |
 
-**Total**: ~650m CPU, ~1Gi memory (minimum), scales with replicas under HPA.
+Memory is higher than the microservices version because Tomcat + Spring MVC + Hibernate
+all share one heap, and the OTel agent adds ~100–150 MB overhead.
 
-## Building for arm64 (Apple Silicon)
+## Building for Custom Java Versions
 
-Pre-built images are available for both x86_64 and arm64:
+The official image uses Java 17. To benchmark with a different Java version (e.g. 25),
+build a custom image with `build-images.sh`. See [docker/README.md](docker/README.md).
 
 ```bash
-# Official multi-arch images from Docker Hub
-docker pull springcommunity/spring-petclinic-api-gateway:latest
-docker pull springcommunity/spring-petclinic-customers-service:latest
-docker pull springcommunity/spring-petclinic-visits-service:latest
-docker pull springcommunity/spring-petclinic-vets-service:latest
-docker pull springcommunity/spring-petclinic-discovery-server:latest
+./applications/petclinic/docker/build-images.sh --java-version 25 --load-to-kind
+./setup.sh --app petclinic --java-version 25
 ```
 
-For building locally with Java 25, see [docker/README.md](docker/README.md).
-
 ## Deployment
-
-Deploy via the main setup script:
 
 ```bash
 ./setup.sh --app petclinic
 ```
 
-Access the application:
-- **API Gateway**: http://localhost:8081/api/customer/owners
-- **Discovery Server UI**: http://localhost:8081/eureka (Eureka dashboard)
+Access points:
+- **PetClinic**: http://localhost:8081
 - **Grafana**: http://localhost:3000 (JVM Overview dashboard)
-- **Locust**: http://localhost:8089 (Load testing UI)
+- **Locust**: http://localhost:8089
 
 ## Comparison to Online Boutique
 
 | Aspect | Online Boutique (adservice) | PetClinic |
-|--------|----------------------------|-----------|
-| JVM services | 1 | 5 |
-| Workload complexity | Low (HashMap lookups) | Moderate (DB, caching, routing) |
-| HPA effectiveness | Poor (rarely scales) | Good (customers/visits scale well) |
-| GC activity | Minimal | Moderate to high |
-| Spring Boot | No (gRPC Java) | Yes (full Spring stack) |
-| Database | No | Yes (customers, visits services) |
-| Caching | No | Yes (vets service) |
+|--------|-----------------------------|-----------|
+| JVM services | 1 | 1 |
+| Workload | Ad retrieval (HashMap) | DB writes, Hibernate, JSP render |
+| HPA effectiveness | Poor (CPU rarely >20%) | Good (POST visits hits CPU limit fast) |
+| GC activity | Minimal | Moderate (Hibernate entity allocation) |
+| Spring Boot | No (gRPC Java) | No (Spring MVC WAR) |
+| Database | No | Yes (H2, pre-populated) |
+| Caching | No | Yes (vets — Spring Cache) |
+| Startup time | ~30 s | ~60 s (Tomcat + Spring ctx + OTel agent) |
 
-**Verdict**: PetClinic is significantly better for JVM benchmarking due to heterogeneous workloads and realistic Spring Boot patterns.
-
-## Known Issues
-
-### API Gateway Routing (405 Errors)
-
-The API Gateway may return 405 (Method Not Allowed) errors for some requests. This is a known configuration issue with Spring Cloud Gateway routing rules.
-
-**Workaround**: For load testing and HPA studies, bypass the API gateway and access services directly:
-
-```yaml
-# In locustfile, use direct service URLs:
-host = "http://customers-service.microservices-demo.svc.cluster.local:8081"
-
-# Visit endpoints use full URL:
-POST http://visits-service.microservices-demo.svc.cluster.local:8082/owners/*/pets/{petId}/visits
-```
-
-This approach:
-- ✅ Eliminates 405 errors
-- ✅ Tests individual services directly (more realistic for HPA studies)
-- ✅ Better isolates CPU load per service
-- ⚠️ Bypasses API Gateway (not representative of production traffic patterns)
-
-### Empty Database on First Start
-
-PetClinic uses in-memory databases that start empty. Always run `seed-database.sh` before load testing.
+**Verdict**: PetClinic is better for JVM benchmarking — real DB workloads, realistic GC patterns, reliable HPA scaling.
 
 ## References
 
-- GitHub: https://github.com/spring-petclinic/spring-petclinic-microservices
-- Spring PetClinic (monolith): https://github.com/spring-projects/spring-petclinic
-- Spring Cloud documentation: https://spring.io/projects/spring-cloud
+- GitHub: https://github.com/spring-petclinic/spring-framework-petclinic
+- Official Docker image: `springcommunity/spring-framework-petclinic`
