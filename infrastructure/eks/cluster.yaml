@@ -1,0 +1,65 @@
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: jvm-bench
+  region: eu-west-1   # change here and in provision.sh if needed
+  version: "1.31"
+  tags:
+    Project: java-on-kubernetes
+    Provisioner: eksctl
+
+# OIDC required for EBS CSI driver to use IAM Roles for Service Accounts
+iam:
+  withOIDC: true
+
+# EBS CSI driver: manages GP3 PersistentVolumes (used by Prometheus and Akamas)
+addons:
+  - name: aws-ebs-csi-driver
+    wellKnownPolicies:
+      ebsCSIController: true
+
+managedNodeGroups:
+
+  # ── Benchmark workload ───────────────────────────────────────────────────────
+  # Runs the application under test (PetClinic, up to 5 HPA replicas) and the
+  # Locust load generator.
+  # 8 vCPU: enough headroom for 5 × 500m-limit pods + OS + kubelet overhead.
+  - name: workload
+    instanceType: m6i.2xlarge   # 8 vCPU, 32 GB RAM
+    desiredCapacity: 1
+    minSize: 1
+    maxSize: 1
+    volumeSize: 50              # GB, root EBS volume
+    labels:
+      node-role: workload
+
+  # ── Monitoring stack ─────────────────────────────────────────────────────────
+  # Runs kube-prometheus-stack (Prometheus + Grafana + Alertmanager)
+  # and the OTel Collector.
+  # 4 vCPU / 16 GB is sufficient for the monitoring stack without retention pressure
+  # (data is stored on EBS PVCs, not in memory).
+  - name: tools
+    instanceType: m6i.xlarge    # 4 vCPU, 16 GB RAM
+    desiredCapacity: 1
+    minSize: 1
+    maxSize: 1
+    volumeSize: 50
+    labels:
+      node-role: tools
+
+  # ── Akamas offline (small tier) ───────────────────────────────────────────────
+  # Akamas small tier requirements:
+  #   requests: 4 CPU, 28 GB memory
+  #   limits:   15 CPU, 28 GB memory   (burst, capped by node capacity)
+  #   storage:  70 GB via PVCs         (provisioned by GP3 StorageClass)
+  # r6i.xlarge: 4 vCPU, 32 GB — memory-optimised, satisfies 28 GB request with margin.
+  # ref: https://docs.akamas.io/akamas-docs/installing/kubernetes/prerequisites/cluster-requirements#small
+  - name: akamas
+    instanceType: r6i.xlarge    # 4 vCPU, 32 GB RAM
+    desiredCapacity: 1
+    minSize: 1
+    maxSize: 1
+    volumeSize: 50              # root volume; Akamas data goes to EBS PVCs
+    labels:
+      node-role: akamas
