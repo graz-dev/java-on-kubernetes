@@ -19,7 +19,7 @@ STORAGE_CLASS="$SCRIPT_DIR/storageclass.yaml"
 
 # Must match metadata.name / metadata.region in cluster.yaml
 CLUSTER_NAME="jvm-bench"
-AWS_REGION="eu-west-1"
+AWS_REGION="us-east-2"
 AWS_PROFILE=""
 
 # --- Argument parsing ---
