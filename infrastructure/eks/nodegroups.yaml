@@ -1,0 +1,25 @@
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: jvm-bench
+  region: us-east-2
+  version: "1.35"
+  tags:
+    Project: java-on-kubernetes
+    Provisioner: eksctl
+
+managedNodeGroups:
+
+  # ── Benchmark workload ───────────────────────────────────────────────────────
+  # Runs the application under test (PetClinic, up to 5 HPA replicas) and the
+  # Locust load generator.
+  # 8 vCPU: enough headroom for 5 × 500m-limit pods + OS + kubelet overhead.
+  - name: app
+    instanceType: m6i.4xlarge   # 16 vCPU, 64 GB RAM
+    desiredCapacity: 1
+    minSize: 1
+    maxSize: 1
+    volumeSize: 50              # GB, root EBS volume
+    labels:
+      node-role: app
