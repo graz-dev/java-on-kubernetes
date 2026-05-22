@@ -1,0 +1,14 @@
+kind: telemetry-instance
+system: petclinic
+name: Prometheus
+provider: Prometheus
+config:
+  address: "<your-prom-url>"
+  port: <your-prom-port>
+  duration: 30
+  logLevel: DETAILED
+
+# metrics:
+#   - metric: working_set_bytes
+#     datasourceMetric: 'container_memory_working_set_bytes{pod=~"otel-collector.*", container="otel-collector", namespace="edge-obs"}'
+  

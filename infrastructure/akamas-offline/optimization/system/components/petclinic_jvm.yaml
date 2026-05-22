@@ -1,0 +1,6 @@
+kind: component
+system: petclinic
+
+name: petclinic_jvm
+description: The JVM component
+componentType: java-openjdk-17

@@ -1,0 +1,6 @@
+kind: component
+system: petclinic
+
+name: petclinic_workload
+description: workload
+componentType: Kubernetes Workload

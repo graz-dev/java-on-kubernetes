@@ -1,0 +1,102 @@
+kind: study
+
+name: S5-Baseline
+system: petclinic
+workflow: petclinic-workflow
+
+goal:
+  objective: minimize
+  function:
+    formula: petclinic_webapp.requests_response_time_p90
+  constraints:
+    relativeToBaseline:
+      - name: Throughput
+        formula: petclinic_webapp.requests_throughput >= -10%
+      - name: Error Rate 
+        formula: petclinic_webapp.requests_error_throughput <= +10%
+    absolute:
+      - name: CPU Util <= 0.8 * CPU Limit petclinic
+        formula: petclinic_workload.k8s_workload_cpu_used - (0.8 * petclinic_workload.k8s_workload_cpu_limit) <= 0
+      - name: Mem Util <= 0.8 * Mem Request petclinic
+        formula: petclinic_workload.k8s_workload_memory_used - (0.8 * petclinic_workload.k8s_workload_memory_request) <= 0
+      - name: Allocated Resources
+        formula: ((8 * (petclinic_workload.k8s_workload_cpu_allocated)/1000 + (petclinic_workload.k8s_workload_memory_allocated)/1024/1024/1024) + (8 * (sapcommerce_workload.k8s_workload_cpu_allocated)/1000 + (sapcommerce_workload.k8s_workload_memory_allocated)/1024/1024/1024)) <= 280 
+      
+windowing:
+  type: trim 
+  trim: [1m, 5m]
+  task: Run performance test
+
+metricsSelection:
+  - petclinic_webapp.requests_throughput
+  - petclinic_webapp.requests_response_time_max
+  - petclinic_webapp.requests_response_time_min
+  - petclinic_webapp.requests_response_time_p50
+  - petclinic_webapp.requests_response_time_p90
+  - petclinic_webapp.requests_response_time_p99
+  - petclinic_webapp.requests_error_throughput
+  
+  # workload
+  - petclinic_workload.k8s_workload_desired_pods
+  - petclinic_workload.k8s_workload_running_pods
+  - petclinic_workload.k8s_workload_cpu_limit
+  - petclinic_workload.k8s_workload_cpu_request
+  - petclinic_workload.k8s_workload_cpu_used
+  - petclinic_workload.k8s_workload_memory_limit
+  - petclinic_workload.k8s_workload_memory_request
+  - petclinic_workload.k8s_workload_memory_used
+  - petclinic_workload.k8s_workload_cpu_allocated
+  - petclinic_workload.k8s_workload_memory_allocated
+  
+  # container
+  - petclinic_container.container_cpu_used
+  - petclinic_container.container_memory_used
+  - petclinic_container.container_cpu_request
+  - petclinic_container.container_cpu_limit
+  - petclinic_container.container_memory_request
+  - petclinic_container.container_memory_limit
+  - petclinic_container.container_restarts
+  
+
+parametersSelection:
+  - name: petclinic_container.cpu_request
+    domain: [300, 2000]
+  - name: petclinic_container.cpu_limit
+    domain: [750, 3000]
+  - name: petclinic_container.memory_limit
+    domain: [4096, 10240]
+  - name: petclinic_hpa.targetCPUUtilizationPercentage
+    domain: [30, 90]
+  - name: petclinic_jvm.jvm_maxHeapSize
+    domain: [4096, 10240]
+  - name: petclinic_jvm.jvm_gcType
+    categories: ["G1", "Parallel", "Serial"]
+  - name: petclinic_jvm.jvm_minHeapFreeRatio
+    domain: [10, 40]
+  - name: petclinic_jvm.jvm_maxHeapFreeRatio
+    domain: [20, 70]
+  - name: petclinic_jvm.jvm_GCTimeRatio
+    domain: [2, 99]
+  - name: petclinic_jvm.jvm_tieredCompilationStopAtLevel #(default 4)
+    domain: [1, 4]
+  - name: petclinic_jvm.jvm_compileThresholdScaling
+    domain: [0.5, 5]
+
+  
+
+parameterConstraints:
+  - name: CPU req < limit petclinic
+    formula: petclinic_container.cpu_request <= petclinic_container.cpu_limit
+  - name: max heap + offheap <= Mem limit petclinic
+    formula: petclinic_jvm.jvm_maxHeapSize + 512 <= petclinic_container.memory_limit
+  
+steps:
+  - name: baseline
+    type: baseline
+    numberOfTrials: 1
+    values:
+      petclinic_container.cpu_request: 750
+      petclinic_container.cpu_limit: 10000
+      petclinic_container.memory_limit: 8192
+      petclinic_hpa.targetCPUUtilizationPercentage: 50
+      petclinic_jvm.jvm_tieredCompilationStopAtLevel: 4

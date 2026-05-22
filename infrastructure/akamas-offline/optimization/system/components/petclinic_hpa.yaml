@@ -1,0 +1,6 @@
+kind: component
+system: petclinic
+
+name: petclinic_hpa
+description: hpa
+componentType: Kubernetes HPA v1

@@ -1,0 +1,6 @@
+kind: component 
+system: petclininc
+
+name: petclininc_container
+description: container
+componentType: Kubernetes Container

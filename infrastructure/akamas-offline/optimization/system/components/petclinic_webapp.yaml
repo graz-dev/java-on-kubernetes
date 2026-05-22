@@ -1,0 +1,6 @@
+kind: component
+system: petclinic
+
+name: petclinic_webapp
+description: container
+componentType: Web Application
